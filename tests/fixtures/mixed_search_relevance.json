@@ -1,0 +1,46 @@
+{
+  "ranking_version": "mixed-rrf-v1",
+  "k": 5,
+  "cases": [
+    {
+      "label": "exact client email",
+      "query": "compose-mixed-fixture-v3@nevis.test",
+      "evidence": "exact_email",
+      "relevant": [{"type": "client", "title": "Nevis Indexing"}]
+    },
+    {
+      "label": "exact client name",
+      "query": "Grace Hopper",
+      "evidence": "exact_name",
+      "relevant": [{"type": "client", "title": "Grace Hopper"}]
+    },
+    {
+      "label": "client description",
+      "query": "estate inheritance specialist",
+      "evidence": "client_description",
+      "relevant": [{"type": "client", "title": "Grace Hopper"}]
+    },
+    {
+      "label": "document semantic paraphrase",
+      "query": "family wealth passed to descendants",
+      "evidence": "document_semantic",
+      "relevant": [{"type": "document", "title": "Inheritance trust note"}]
+    },
+    {
+      "label": "ambiguous mixed identity and content",
+      "query": "Nevis indexing",
+      "evidence": "ambiguous_mixed",
+      "relevant": [
+        {"type": "client", "title": "Nevis Indexing"},
+        {"type": "document", "title": "Mixed Compose smoke fixture"}
+      ]
+    },
+    {
+      "label": "nonsense query",
+      "query": "zzzxqv plmoknijb",
+      "evidence": "threshold",
+      "relevant": [],
+      "expect_empty": true
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: 0.6.14
+      - run: uv sync --all-groups --locked
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: uv run pip-audit --local --skip-editable --progress-spinner off
+      - run: uv run pytest
+      - run: docker compose -p nevis-migration-contract up --build --wait postgres
+      - run: docker compose -p nevis-migration-contract run --rm migrate alembic upgrade head
+      - run: docker compose -p nevis-migration-contract run --rm migrate alembic downgrade base
+      - run: docker compose -p nevis-migration-contract run --rm migrate alembic upgrade head
+      - run: docker compose -p nevis-migration-contract exec -T postgres psql -U nevis -d nevis -tAc "SELECT count(*) FROM tenants WHERE slug = 'nevis-global'" | grep '^1$'
+      - run: docker compose -p nevis-migration-contract run --rm migrate python scripts/verify_search_migration.py
+      - run: NEVIS_TEST_DATABASE_URL=postgresql+asyncpg://nevis:nevis@localhost:5434/nevis docker compose -f compose.yaml -f compose.test.yaml -p nevis-integration up --build --wait postgres migrate
+      - run: NEVIS_TEST_DATABASE_URL=postgresql+asyncpg://nevis:nevis@localhost:5434/nevis uv run pytest tests/integration
+      - if: always()
+        run: docker compose -f compose.yaml -f compose.test.yaml -p nevis-integration down -v
+      - if: always()
+        run: docker compose -p nevis-migration-contract down -v
+      - run: docker compose up --build --wait
+      - run: docker compose exec -T api alembic check
+      - run: docker compose exec -T api python -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/health/ready').status == 200"
+      - run: docker compose exec -T api python scripts/verify_foundation.py
+      - run: docker compose exec -T api python scripts/verify_ingestion.py
+      - run: docker compose exec -T api python scripts/verify_search.py
+      - run: docker compose exec -T api python scripts/evaluate_mixed_search.py
+      - run: docker compose exec -T api python scripts/benchmark_search.py
+      - if: always()
+        run: docker compose down -v
