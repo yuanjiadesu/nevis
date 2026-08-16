@@ -1,0 +1,66 @@
+services:
+  postgres:
+    build:
+      context: ./docker/postgres
+      args:
+        PGVECTOR_VERSION: "0.8.1"
+    environment:
+      POSTGRES_DB: nevis
+      POSTGRES_USER: nevis
+      POSTGRES_PASSWORD: nevis
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nevis -d nevis"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports: ["${NEVIS_DATABASE_PORT:-5432}:5432"]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.1
+    platform: linux/amd64
+    command: ["--model-id", "BAAI/bge-small-en-v1.5", "--revision", "5c38ec7"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    volumes: [tei-data:/data]
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment: &nevis-env
+      NEVIS_ENVIRONMENT: local
+      NEVIS_IDENTITY_PROVIDER: local-header
+      NEVIS_DATABASE_URL: postgresql+asyncpg://nevis:nevis@postgres:5432/nevis
+      NEVIS_TEI_BASE_URL: http://tei:80
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  api:
+    build: .
+    environment: *nevis-env
+    ports: ["${NEVIS_API_PORT:-8001}:8000"]
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      tei: {condition: service_healthy}
+
+  worker:
+    build: .
+    command: ["nevis-worker"]
+    environment: *nevis-env
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      tei: {condition: service_healthy}
+
+volumes:
+  postgres-data:
+  tei-data:
