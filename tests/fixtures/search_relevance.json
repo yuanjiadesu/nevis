@@ -1,0 +1,39 @@
+[
+  {
+    "label": "exact pension term",
+    "query": "pension drawdown",
+    "relevant": ["retirement-plan"],
+    "evidence": "lexical"
+  },
+  {
+    "label": "retirement paraphrase",
+    "query": "income after leaving work",
+    "relevant": ["retirement-plan"],
+    "evidence": "semantic"
+  },
+  {
+    "label": "inheritance terminology",
+    "query": "estate tax trust allowance",
+    "relevant": ["inheritance-tax"],
+    "evidence": "hybrid"
+  },
+  {
+    "label": "weak nonsense query",
+    "query": "zzzxqv unmatched",
+    "relevant": [],
+    "evidence": "threshold"
+  },
+  {
+    "label": "multi chunk retirement evidence",
+    "query": "annual allowance retirement contribution",
+    "relevant": ["retirement-allowance"],
+    "evidence": "aggregation"
+  },
+  {
+    "label": "replacement version",
+    "query": "superseded pension policy",
+    "relevant": ["current-policy"],
+    "excluded": ["historical-policy"],
+    "evidence": "version"
+  }
+]
