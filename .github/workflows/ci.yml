@@ -51,9 +51,12 @@ jobs:
       - run: docker compose exec -T api alembic check
       - run: docker compose exec -T api python -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/health/ready').status == 200"
       - run: docker compose exec -T api python scripts/verify_foundation.py
+      - run: docker compose exec -T api python scripts/provision_advisor.py compose-smoke-advisor
+      - run: docker compose exec -T api python scripts/provision_advisor.py local-advisor
       - run: docker compose exec -T api python scripts/verify_ingestion.py
       - run: docker compose exec -T api python scripts/verify_search.py
-      - run: docker compose exec -T api python scripts/evaluate_mixed_search.py
+      - run: docker compose exec -T -e NEVIS_SEED_URL=http://127.0.0.1:8000 api python scripts/seed_preview.py
+      - run: docker compose exec -T -e NEVIS_EVALUATION_URL=http://127.0.0.1:8000 api python scripts/evaluate_mixed_search.py
       - run: docker compose exec -T api python scripts/benchmark_search.py
       - if: always()
         run: docker compose down -v
