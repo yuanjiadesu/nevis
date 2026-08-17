@@ -1,9 +1,8 @@
-# Operations runbook
+# Operate Nevis
 
-Use this runbook for local and deployment checks. Never copy tokens, client data, document
-content, raw queries, vectors, or connection strings into logs or tickets.
+Use this runbook for local and user acceptance testing (UAT) operations. Never copy tokens, client data, document content, raw queries, vectors, or connection strings into logs or tickets.
 
-## Start, inspect, and stop
+## Start and inspect services
 
 ```bash
 docker compose up --build
@@ -13,40 +12,35 @@ curl http://localhost:8001/health/ready
 docker compose down
 ```
 
-`/health/live` reports only whether the API process is running. `/health/ready` checks
-PostgreSQL, TEI, and OIDC verification keys when OIDC is enabled.
+`/health/live` checks the API process. `/health/ready` checks PostgreSQL, Text Embeddings Inference (TEI), OpenID Connect (OIDC) keys when enabled, the evidence ranker, and summary-worker parity when enabled.
 
-| Readiness failure | First checks |
+After a readiness failure, start here:
+
+| Dependency | First check |
 | --- | --- |
-| `database` | `docker compose logs postgres migrate`; confirm migrations completed. |
-| `embedding_provider` | `docker compose logs tei`; allow time for the first model download. |
-| `identity_provider` | Check issuer, audience, JWKS reachability, TLS, and DNS without logging credentials. |
+| `database` | Run `docker compose logs postgres migrate` and confirm migrations |
+| `embedding_provider` | Run `docker compose logs tei` and allow the first model download |
+| `reranker_provider` | Run `docker compose logs reranker`; search can use `hybrid_unreranked` |
+| `identity_provider` | Check issuer, audience, JSON Web Key Set reachability, TLS, and DNS |
+| `summary_worker` | Run `nevis-summary-maintenance diagnose`; restart the API and worker if capability hashes differ |
 
-## Identity and membership
-
-Provision local membership with:
+## Manage identity and membership
 
 ```bash
-docker compose exec api python scripts/provision_advisor.py <advisor-external-id>
+docker compose exec api python scripts/provision_advisor.py advisor_external_id
 ```
 
-In an OIDC deployment, use the verified `sub` as `advisors.external_id`. Terminate TLS at the
-ingress, forward `Authorization` and `X-Nevis-Tenant`, and strip `X-Nevis-Advisor`. Configure
-one HTTPS issuer and audience and use a non-placeholder cursor signing key.
+UAT uses fictional data and `local-advisor` in `nevis-global` behind Cloudflare Access. It is not a production identity boundary.
 
-Publish a new signing key in JWKS before issuing tokens with its `kid`. Keep the old key until
-old tokens and cache windows expire. An unknown `kid` triggers one rate-limited refresh.
-During an issuer outage, cached keys work only within the configured maximum-stale window;
-after that, verification fails closed.
+Production API integrations map the verified OIDC `sub` to `advisors.external_id` and require active membership in `X-Nevis-Tenant`. Nevis does not serve the browser console with production authentication.
 
-Identity failures return `401`, verified advisors without active membership return `403`,
-cross-tenant resource reads return `404`, and an unavailable identity dependency returns
-`503` without protected data.
+Publish a new signing key before issuing tokens with its `kid`, and keep the old key through the token lifetime and key-cache window. An unknown `kid` triggers one rate-limited refresh, and verification fails closed after the maximum stale-key window.
 
-## Migrations and rollback
+Identity failures return `401`, missing membership `403`, cross-tenant resources `404`, and an unavailable required identity dependency `503` without data.
 
-Compose applies migrations through the `migrate` service. Inspect or apply them from the host
-with `NEVIS_DATABASE_URL` set:
+## Apply migrations
+
+Compose runs migrations through the `migrate` service. To inspect or apply them from the host, set `NEVIS_DATABASE_URL` and run:
 
 ```bash
 uv run alembic current
@@ -54,73 +48,76 @@ uv run alembic upgrade head
 uv run alembic check
 ```
 
-Downgrade only disposable local data with `uv run alembic downgrade -1`. With live data,
-restore the previous application image and follow a reviewed migration plan. Roll back the
-application before the schema. Never roll an OIDC deployment back to local-header mode.
+Use `uv run alembic downgrade -1` only with disposable local data. For live data, restore the previous application image and follow a reviewed migration plan; roll back the application before the schema.
 
-The client migration intentionally leaves legacy documents with `client_id = NULL`. Do not
-invent ownership during migration or recovery.
+Migration `20260817_0010` removes documents without a client because Nevis cannot infer ownership. Review that deletion before applying it to older data.
 
-## Indexing failures
+## Diagnose indexing failures
 
-Inspect the document or version status endpoint first. A failed job exposes a safe error code,
-not source content or provider details.
+Inspect document or version status first. Failed jobs expose safe codes, not content or provider details.
 
-- For `embedding_runtime_unavailable`, inspect `docker compose logs tei worker`, restore TEI,
-  then use the reviewed replay procedure.
-- A worker may reclaim an interrupted `processing` job after its lease expires.
-- Do not create a replacement document version or delete chunks to force a retry.
-- Keep the original tenant, version, profile, and authorisation decision on every replay.
+- `embedding_runtime_unavailable`: inspect `docker compose logs tei worker` and restore TEI. Failed indexing is terminal and this release has no supported requeue command
+- Interrupted `processing`: wait for the lease to expire so another worker can reclaim it
 
-Backup/restore and indexing replay tooling are the next operational milestone. Add and
-rehearse both before the first live-data deployment.
+## Recover missing summaries
 
-## Search and relevance
+Confirm the API and worker use the same [model provider configuration](model-providers.md#test-llm-summaries-locally), then:
 
-`mode: lexical_degraded` means PostgreSQL and authorisation succeeded but query embedding did
-not. Restore TEI; do not change the active profile as an incident workaround. A `503 search
-unavailable` means a required database, profile, or audit operation failed, so no partial
-results were returned.
+1. Run `nevis-summary-maintenance diagnose`.
+2. Recreate API and worker if their capability hashes differ.
+3. Run `nevis-summary-maintenance reconcile --dry-run`, then `reconcile`.
+4. Use `--retry-failed` only after fixing the safe failure code.
+5. Run `scripts/verify_preview_pipeline.py`.
 
-The default semantic threshold is `0.70`. Change the threshold, branch weights, precedence, or
-cursor ordering only with a new ranking version and labelled evaluation evidence.
+Do not reset the database for routine summary recovery.
 
-Run the real-provider checks against the Compose stack:
+Preserve failed indexing lineage:
+
+- Failed version: do not create a replacement version or delete chunks to force a retry
+- Disposable local or fictional UAT data: reset the data volumes and reseed after fixing the cause
+- Non-disposable data: retain the failed job unchanged until reviewed recovery tooling exists; do not edit job rows directly
+
+Add and rehearse backup, restore, and indexing replay before accepting real client data.
+
+## Diagnose search failures
+
+`lexical_degraded` means query embedding failed; restore TEI without changing the active profile. `hybrid_unreranked` means authorised candidates returned without final evidence ranking. `503 search unavailable` means a required database, profile, or audit operation failed.
+
+The semantic candidate floor is `0.60` and the evidence ranker floor is `0.005`. Change either value, branch weights, ordering, or model only with a new ranking version and labelled evidence.
+
+Run provider-backed checks:
 
 ```bash
-docker compose exec api python scripts/evaluate_mixed_search.py
+docker compose exec -T -e NEVIS_EVALUATION_URL=http://127.0.0.1:8000 api \
+  python scripts/evaluate_mixed_search.py
 docker compose exec api python scripts/benchmark_search.py
 ```
 
-Run the rollback-only repository capacity harness from the host:
+Run the repository capacity harness from the host:
 
 ```bash
 NEVIS_DATABASE_URL=postgresql+asyncpg://nevis:nevis@localhost:5432/nevis \
   uv run python scripts/benchmark_repository_search.py
 ```
 
-Before admitting a tenant above 10,000 indexed documents, repeat it with
-`NEVIS_BENCHMARK_DOCUMENTS=100000`. Inspect tenant-scoped plans with synthetic queries only:
+Before admitting a tenant above 10,000 indexed documents, repeat with `NEVIS_BENCHMARK_DOCUMENTS=100000`. Inspect tenant-scoped plans with synthetic queries:
 
 ```bash
 docker compose exec -T postgres psql -U nevis -d nevis \
   -f /dev/stdin < scripts/explain_search.sql
 ```
 
-The current measurements and capacity boundary are in
-[architecture.md](architecture.md#measured-envelope).
+See [Search engine](search-engine.md#measure-search-changes) for current measurements.
 
-## Verification
-
-Run the local quality gates from the README, then exercise the database-backed suite:
+## Run database-backed tests
 
 ```bash
 docker compose -f compose.yaml -f compose.test.yaml -p nevis-integration \
   up --build --wait postgres migrate
-NEVIS_TEST_DATABASE_URL=postgresql+asyncpg://nevis:nevis@localhost:5434/nevis \
-  uv run pytest tests/integration
+uv run pytest tests/integration
 docker compose -f compose.yaml -f compose.test.yaml -p nevis-integration down -v
 ```
 
-Use `docker compose down -v` only for disposable local data. It deletes the database and model
-volumes. Normal `docker compose down` preserves both.
+The default test database is `postgresql+asyncpg://nevis:nevis@localhost:5434/nevis`; set `NEVIS_TEST_DATABASE_URL` to use another. An unreachable configured database fails the suite.
+
+Use `docker compose down -v` only for disposable local data — it deletes database and model volumes, while plain `docker compose down` preserves them.

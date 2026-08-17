@@ -1,116 +1,90 @@
-# Nevis Search Platform
+# Nevis
 
-Nevis lets an authorised advisor search client records and their documents in one result
-list. It keeps tenant access, source data, document versions, embedding profiles, and
-authorisation decisions attributable. It returns search results, not generated answers.
+Nevis gives an authorised adviser one place to find a client and the document passage that answers a query. Every result points back to stored source text. Nevis does not generate answers.
 
-The initial product increment is implemented. The next milestone is operations and recovery;
-see the [platform plan](docs/platform-plan.md).
+**Status:** local development and fictional-data user acceptance testing (UAT) only. Do not load real client data. Production still needs retention and deletion policy, tested backup and restore, indexing recovery tooling, production browser authentication, and operational metrics. See [Roadmap](docs/roadmap.md#work-starts-when).
 
-## Run locally
+## Start locally
 
-You need Docker Compose v2. For host development, install
-[uv](https://docs.astral.sh/uv/) and Python 3.12.
+Install Docker Compose v2. Host development also requires [uv](https://docs.astral.sh/uv), Python 3.12, and Node 22 with Corepack.
 
 ```bash
 cp .env.example .env
 uv sync --all-groups
 docker compose up --build
-```
-
-The first start downloads the pinned BGE-small model. The full stack needs about 2 GB of
-Docker memory. TEI runs under emulation on Apple Silicon, so its first start can be slow.
-
-Provision a local advisor:
-
-```bash
 docker compose exec api python scripts/provision_advisor.py local-advisor
 ```
 
-Then visit `http://localhost:8001/docs` for the generated API documentation.
+The first start downloads the pinned embedding and reranking models. Allocate at least 4 GB to Docker; the UAT stack measured about 2.8 GB on an Intel N100, and Text Embeddings Inference (TEI) needs more headroom under Apple Silicon emulation. Both search models run locally, so no large language model (LLM) key is required — [Model providers](docs/model-providers.md) covers optional summaries.
 
-Check service health:
+Open the console at `http://localhost:8001/`, OpenAPI documentation at `/docs`, and readiness at `/health/ready`. Set `NEVIS_API_PORT=18000` before startup if `8001` is taken, then follow the [main workflow](docs/quickstart.md).
 
-```bash
-curl http://localhost:8001/health/live
-curl http://localhost:8001/health/ready
-```
+For frontend work, run `corepack enable`, `pnpm install --frozen-lockfile`, and `pnpm dev` from `web/`. Vite serves `http://localhost:5173` and proxies API calls to FastAPI.
 
-Set `NEVIS_API_PORT=18000` before `docker compose up` if port 8001 is unavailable.
+## Follow one record
 
-## API
+Each request begins with an adviser and one tenant. A client stays inside that boundary. A document belongs to the client, each edit creates an immutable version, and the worker indexes that version. Search returns the client or the strongest source passage with its lineage intact.
 
-All protected requests select a tenant. Local development identifies the advisor with
-`X-Nevis-Advisor`; OIDC deployments use a bearer token and ignore that header.
+Three rules shape the system:
 
-| Endpoint | Purpose |
+- Unknown and cross-tenant resources return the same `404`
+- Client and document writes use an `Idempotency-Key`, so a safe retry cannot duplicate data
+- Client fields stay in PostgreSQL; only document text and queries reach the local search models
+
+Read [Architecture](docs/architecture.md) for the trust boundaries, [Documents](docs/documents.md) for the version lifecycle, and [Search engine](docs/search-engine.md) for ranking and degraded modes. The generated [OpenAPI contract](openapi.json) lists every endpoint.
+
+## Try the search promises
+
+Seed the fictional corpus with `docker compose exec -T api python scripts/seed_preview.py`, then try the cases from the original brief:
+
+| Query | Expected result |
 | --- | --- |
-| `POST /v1/clients` | Create an idempotent tenant-owned client. |
-| `GET /v1/clients/{id}` | Read a client and its provenance. |
-| `POST /v1/clients/{id}/documents` | Accept a trusted plain-text document and queue indexing. |
-| `GET /v1/documents/{id}` | Read current document and indexing state without content. |
-| `GET /v1/document-versions/{id}` | Read version-specific indexing status. |
-| `GET /search` | Search clients and documents with signed cursor pagination. |
+| `NevisWealth` | Client `John Doe` from name, email, or description search |
+| `neviswealth.com` | Clients with that complete email domain |
+| `address proof` | `Household electricity statement`, whose text says `utility bill` |
 
-Use a separate `Idempotency-Key` for each client creation and document ingestion command.
-Unknown and cross-tenant resources return the same `404` response.
+An abridged document result shows the passage that earned the match:
 
-Local request context:
-
-```text
-X-Nevis-Tenant: nevis-global
-X-Nevis-Advisor: local-advisor
+```json
+{
+  "ranking_version": "mixed-rrf-v5",
+  "mode": "hybrid",
+  "results": [
+    {
+      "type": "document",
+      "title": "Household electricity statement",
+      "snippet": "The document is a utility bill from an electricity supplier. It shows the account holder's name and current residential address."
+    }
+  ],
+  "next_cursor": null
+}
 ```
 
-OIDC request context:
+The real response adds scores, branch ranks, and tenant, document, version, model, indexing, and search provenance.
 
-```text
-Authorization: Bearer <OIDC access token>
-X-Nevis-Tenant: <tenant slug>
-```
+## Run checks
 
-The database maps the verified OIDC `sub` to an advisor and checks active tenant membership.
-Token tenant and role claims cannot grant access. Missing or invalid identity returns `401`,
-missing membership returns `403`, conflicts return `409`, and unavailable required
-dependencies return `503` without partial data.
-
-## Search behaviour
-
-`mixed-rrf-v1` places exact client email matches first, then exact full-name matches. It
-combines general client text, document text, and document semantic matches by branch rank.
-Client data stays in PostgreSQL and is never sent to the embedding provider.
-
-Every result includes type-specific provenance. If TEI cannot embed a query, search keeps
-the lexical client and document branches and reports `mode: lexical_degraded`.
-
-## Quality checks
+Start the integration database through the [operations runbook](docs/runbook.md) before combined coverage.
 
 ```bash
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy src
 uv run pip-audit --local --skip-editable --progress-spinner off
-uv run pytest
-openspec validate --all --strict
+NEVIS_TEST_DATABASE_URL=postgresql+asyncpg://nevis:nevis@localhost:5434/nevis ./scripts/coverage.sh
+uv run playwright install chromium
+uv run pytest tests/browser
+cd web && pnpm lint && pnpm test:coverage && pnpm build && cd ..
+uv run python scripts/export_openapi.py
+cd web && pnpm generate:api && cd ..
+git diff --exit-code -- openapi.json web/src/api.generated.ts
+pnpm dlx @fission-ai/openspec@1.9.0 validate --all --strict
 ```
 
-The Compose verification, relevance, migration, and performance commands are in the
-[operations runbook](docs/runbook.md).
+The remaining guides cover the [console](docs/console.md), [UAT deployment](docs/deployment.md), [roadmap](docs/roadmap.md), and [scale constraints](docs/scale-constraints.md).
 
-## Documentation
+## Know the limits
 
-- [Architecture](docs/architecture.md) explains trust boundaries, data flow, ranking, and
-  measured limits.
-- [Operations runbook](docs/runbook.md) covers deployment checks, failures, migrations, and
-  recovery.
-- [Platform plan](docs/platform-plan.md) records the quality bar and remaining roadmap.
-- `/docs` and `/openapi.json` are the authoritative HTTP contracts.
-- `openspec/specs/` contains canonical behavioural requirements; `openspec/changes/archive/`
-  records why completed features changed.
+Nevis accepts trusted plain text only. It has no file extraction, optical character recognition, source connectors, deletion workflow, generated answers, federation, cross-tenant administration, or requeue command for failed indexing.
 
-## Deliberate limits
-
-The platform accepts trusted plain text only. It does not yet provide file extraction, OCR,
-source connectors, retention workflows, client mutation or deletion, generative answers,
-fuzzy client matching, federation, or cross-tenant administration. We add those features
-only through reviewed OpenSpec changes backed by a product or operational need.
+The design targets 10,000 clients but has not passed a representative capacity test. [Scale constraints](docs/scale-constraints.md) gives the evidence, bottlenecks, and trigger for changing the architecture.
