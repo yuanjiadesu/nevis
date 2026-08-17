@@ -60,6 +60,7 @@ class SearchQuery:
 class ComponentScores:
     lexical: float | None
     semantic: float | None
+    reranker: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +137,36 @@ class RetrievalCandidate:
     title: str
     snippet: str
     score: float
+    chunk_id: uuid.UUID = uuid.UUID(int=0)
+    content: str = ""
+    title_match: bool = False
+    content_match: bool = False
+    semantic_match: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RerankedCandidate:
+    candidate: RetrievalCandidate
+    score: float
+
+
+_EMAIL_PATTERN = re.compile(
+    r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,63}$",
+    re.IGNORECASE,
+)
+_DOMAIN_PATTERN = re.compile(
+    r"^(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,63}$",
+    re.IGNORECASE,
+)
+
+
+def is_identifier_query(value: str) -> bool:
+    """Recognize complete email addresses and domain names only."""
+    normalized = value.strip()
+    if not normalized or any(character.isspace() for character in normalized):
+        return False
+    return bool(_EMAIL_PATTERN.fullmatch(normalized) or _DOMAIN_PATTERN.fullmatch(normalized))
 
 
 @dataclass(frozen=True, slots=True)

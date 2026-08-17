@@ -147,7 +147,9 @@ class Client(Base):
         TSVECTOR,
         Computed(
             "to_tsvector('english', coalesce(first_name, '') || ' ' || "
-            "coalesce(last_name, '') || ' ' || coalesce(description, ''))",
+            "coalesce(last_name, '') || ' ' || "
+            "regexp_replace(coalesce(email, ''), '[^[:alnum:]]+', ' ', 'g') || ' ' || "
+            "coalesce(description, ''))",
             persisted=True,
         ),
         nullable=False,

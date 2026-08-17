@@ -587,7 +587,26 @@ async def search_lexical_candidates(
     statement = text(
         """
         WITH parsed_query AS (
-            SELECT websearch_to_tsquery('english', :query) AS value
+            SELECT
+                websearch_to_tsquery('english', :query) AS content_value,
+                websearch_to_tsquery(
+                    'english',
+                    regexp_replace(:query, '[^[:alnum:]]+', ' ', 'g')
+                ) AS title_value,
+                (
+                    SELECT to_tsquery(
+                        'english',
+                        string_agg(quote_literal(lexeme) || ':*', ' & ')
+                    )
+                    FROM unnest(
+                        tsvector_to_array(
+                            to_tsvector(
+                                'english',
+                                regexp_replace(:query, '[^[:alnum:]]+', ' ', 'g')
+                            )
+                        )
+                    ) lexeme
+                ) AS title_prefix_value
         ),
         matching_chunk_ids AS MATERIALIZED (
             SELECT c.id AS chunk_id
@@ -595,7 +614,7 @@ async def search_lexical_candidates(
             WHERE c.tenant_id = :tenant_id
               AND c.embedding_profile_id = :profile_id
               AND c.authorization_result = 'allow'
-              AND c.content_search_vector @@ pq.value
+              AND c.content_search_vector @@ pq.content_value
             UNION
             SELECT c.id AS chunk_id
             FROM documents d
@@ -758,15 +777,52 @@ async def search_lexical_clients(
     rows = (
         await session.execute(
             text(
-                "WITH parsed AS (SELECT websearch_to_tsquery('english', :query) value) "
+                "WITH parsed AS ("
+                "SELECT websearch_to_tsquery("
+                "'english', regexp_replace(:query, '[^[:alnum:]]+', ' ', 'g')"
+                ") exact_value, "
+                "(SELECT to_tsquery('english', "
+                "string_agg(quote_literal(lexeme) || ':*', ' & ')) "
+                "FROM unnest(tsvector_to_array(to_tsvector("
+                "'english', regexp_replace(:query, '[^[:alnum:]]+', ' ', 'g')"
+                "))) lexeme) "
+                "prefix_value) "
                 "SELECT c.tenant_id, c.id, c.first_name, c.last_name, c.email, "
                 "c.description, c.creation_authorization_decision_id, "
-                "ts_rank_cd(c.search_vector, p.value) AS score "
+                "GREATEST(ts_rank_cd(c.search_vector, p.exact_value), "
+                "COALESCE(ts_rank_cd(c.search_vector, p.prefix_value), 0)) AS score "
                 "FROM clients c CROSS JOIN parsed p "
-                "WHERE c.tenant_id=:tenant_id AND c.search_vector @@ p.value "
+                "WHERE c.tenant_id=:tenant_id AND (c.search_vector @@ p.exact_value "
+                "OR c.search_vector @@ p.prefix_value) "
                 "ORDER BY score DESC, c.id ASC LIMIT :limit"
             ),
             {"tenant_id": tenant_id, "query": query, "limit": limit},
         )
     ).mappings()
     return [_client_candidate(row, MatchBand.GENERAL) for row in rows]
+
+
+async def search_fuzzy_name_clients(
+    session: AsyncSession,
+    *,
+    tenant_id: object,
+    query: str,
+    threshold: float,
+    limit: int,
+) -> list[ClientRetrievalCandidate]:
+    await _set_strict_word_similarity_threshold(session, threshold)
+    rows = (
+        await session.execute(
+            text(
+                "SELECT tenant_id, id, first_name, last_name, email, description, "
+                "creation_authorization_decision_id, "
+                "strict_word_similarity(:query, first_name || ' ' || last_name) AS score "
+                "FROM clients "
+                "WHERE tenant_id=:tenant_id "
+                "AND :query <<% (first_name || ' ' || last_name) "
+                "ORDER BY score DESC, id ASC LIMIT :limit"
+            ),
+            {"tenant_id": tenant_id, "query": query, "limit": limit},
+        )
+    ).mappings()
+    return [_client_candidate(row, MatchBand.FUZZY) for row in rows]

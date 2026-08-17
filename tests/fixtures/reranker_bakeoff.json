@@ -1,0 +1,26 @@
+{
+  "embedding_model": "BAAI/bge-small-en-v1.5@5c38ec7",
+  "candidate_floor": 0.60,
+  "candidate_limit": 10,
+  "candidate_recall_at_10": 1.0,
+  "latency_budget_ms": 800.0,
+  "selected_model": "minilm_l6",
+  "models": {
+    "minilm_l6": {
+      "model": "cross-encoder/ms-marco-MiniLM-L6-v2",
+      "revision": "c5ee24c",
+      "address_positive_score": 0.014756929,
+      "address_hard_negative_score": 0.003411981,
+      "utility_investment_negative_score": 0.00001706371,
+      "green_investing_positive_score": 0.00860074,
+      "p50_ms_at_9_candidates": 371.14,
+      "p95_ms_at_9_candidates": 488.93
+    },
+    "bge_base": {
+      "model": "BAAI/bge-reranker-base",
+      "revision": "2cfc18c",
+      "p50_ms_at_18_candidates": 8572.26,
+      "p95_ms_at_18_candidates": 11350.14
+    }
+  }
+}

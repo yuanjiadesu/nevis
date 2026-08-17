@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     embedding_normalization: str = "l2"
     embedding_chunking_version: int = Field(default=1, ge=1)
     embedding_pipeline_version: int = Field(default=1, ge=1)
+    reranker_provider: str = "tei"
+    reranker_base_url: str = "http://localhost:8081"
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
+    reranker_model_revision: str = "c5ee24c"
+    reranker_timeout_seconds: float = Field(default=1.0, ge=0.1, le=30.0)
     log_level: str = "INFO"
     search_query_max_length: int = Field(default=500, ge=1, le=2_000)
     search_default_limit: int = Field(default=20, ge=1, le=100)

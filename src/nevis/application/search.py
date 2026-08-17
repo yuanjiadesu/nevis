@@ -19,6 +19,7 @@ from nevis.domain.search import (
     InvalidSearchCursor,
     MatchBand,
     MixedSearchResult,
+    RerankedCandidate,
     ResultType,
     RetrievalCandidate,
     RetrievalMode,
@@ -26,6 +27,7 @@ from nevis.domain.search import (
     SearchPage,
     SearchQuery,
     SearchResult,
+    is_identifier_query,
 )
 from nevis.infrastructure.cursors import SearchCursorCodec
 from nevis.infrastructure.embeddings import EmbeddingProviderUnavailable
@@ -52,6 +54,30 @@ class _DocumentFusion:
     semantic_score: float | None = None
     lexical_rank: int | None = None
     semantic_rank: int | None = None
+    reranker_score: float | None = None
+    reranker_rank: int | None = None
+
+
+def select_reranker_candidates(
+    lexical: list[RetrievalCandidate],
+    semantic: list[RetrievalCandidate],
+    *,
+    rrf_constant: int,
+    lexical_weight: float,
+    semantic_weight: float,
+    limit: int,
+) -> list[RetrievalCandidate]:
+    """Fuse chunk branches for recall before the expensive evidence pass."""
+    scores: dict[uuid.UUID, float] = {}
+    candidates: dict[uuid.UUID, RetrievalCandidate] = {}
+    for branch, weight in ((lexical, lexical_weight), (semantic, semantic_weight)):
+        for rank, candidate in enumerate(branch, start=1):
+            candidates.setdefault(candidate.chunk_id, candidate)
+            scores[candidate.chunk_id] = scores.get(candidate.chunk_id, 0.0) + weight / (
+                rrf_constant + rank
+            )
+    ordered = sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id.int))
+    return [candidates[chunk_id] for chunk_id in ordered[:limit]]
 
 
 def _result_identity(result: MixedSearchResult) -> uuid.UUID:
@@ -80,6 +106,8 @@ def fuse_mixed_candidates(
     client_weight: float,
     document_lexical_weight: float,
     document_semantic_weight: float,
+    reranked: list[RerankedCandidate] | None = None,
+    document_reranker_weight: float = 1.0,
     search_decision_id: uuid.UUID,
     excerpt_length: int,
 ) -> list[MixedSearchResult]:
@@ -212,17 +240,21 @@ async def search_documents(
     cursor: str | None,
     authorization: AuthorizationContext,
     provider: EmbeddingProvider,
+    reranker: RerankerProvider,
     cursor_codec: SearchCursorCodec,
     lexical_limit: int,
     semantic_limit: int,
     client_limit: int,
-    semantic_threshold: float,
+    semantic_candidate_threshold: float,
+    reranker_limit: int,
+    reranker_threshold: float,
     rrf_constant: int,
     snippet_length: int,
     client_excerpt_length: int,
     client_weight: float,
     document_lexical_weight: float,
     document_semantic_weight: float,
+    document_reranker_weight: float,
     ranking_version: str = MIXED_RANKING_VERSION,
 ) -> SearchPage:
     started = time.perf_counter()
@@ -237,12 +269,14 @@ async def search_documents(
         profile: EmbeddingProfile | None = await get_active_embedding_profile(session)
         if profile is None:
             raise SearchDependencyUnavailable("search profile unavailable")
-        mode = RetrievalMode.HYBRID
-        try:
-            embedding: list[float] | None = await provider.embed_query(query.text)
-        except EmbeddingProviderUnavailable:
-            embedding = None
-            mode = RetrievalMode.LEXICAL_DEGRADED
+        identifier_query = is_identifier_query(query.text)
+        mode = RetrievalMode.LEXICAL_IDENTIFIER if identifier_query else RetrievalMode.HYBRID
+        embedding: list[float] | None = None
+        if not identifier_query:
+            try:
+                embedding = await provider.embed_query(query.text)
+            except EmbeddingProviderUnavailable:
+                mode = RetrievalMode.LEXICAL_DEGRADED
         cursor_state = cursor_codec.decode(cursor) if cursor else None
         if cursor_state is not None:
             _validate_cursor(
@@ -276,14 +310,46 @@ async def search_documents(
                 tenant_id=authorization.tenant_id,
                 profile_id=profile.id,
                 embedding=embedding,
-                threshold=semantic_threshold,
+                threshold=semantic_candidate_threshold,
                 limit=semantic_limit,
                 snippet_length=snippet_length,
             )
             if embedding is not None
             else []
         )
-        ranked = fuse_mixed_candidates(
+        reranker_candidates: list[RetrievalCandidate] = []
+        reranked: list[RerankedCandidate] | None = None
+        reranker_duration_ms: float | None = None
+        if mode is RetrievalMode.HYBRID:
+            reranker_candidates = select_reranker_candidates(
+                lexical,
+                semantic,
+                rrf_constant=rrf_constant,
+                lexical_weight=document_lexical_weight,
+                semantic_weight=document_semantic_weight,
+                limit=reranker_limit,
+            )
+            if reranker_candidates:
+                reranker_started = time.perf_counter()
+                try:
+                    reranker_scores = await reranker.rerank(
+                        query.text, [candidate.content for candidate in reranker_candidates]
+                    )
+                except RerankerProviderUnavailable:
+                    mode = RetrievalMode.HYBRID_UNRERANKED
+                else:
+                    reranked = sorted(
+                        (
+                            RerankedCandidate(candidate, score)
+                            for candidate, score in zip(
+                                reranker_candidates, reranker_scores, strict=True
+                            )
+                            if score >= reranker_threshold
+                        ),
+                        key=lambda item: (-item.score, item.candidate.chunk_id.int),
+                    )
+                reranker_duration_ms = (time.perf_counter() - reranker_started) * 1_000
+        ordinary_ranked = fuse_mixed_candidates(
             clients=[*exact_email, *exact_name, *client_lexical],
             lexical=lexical,
             semantic=semantic,
@@ -333,6 +399,7 @@ async def search_documents(
                 "client_lexical": item.ranks.client_lexical,
                 "document_lexical": item.ranks.document_lexical,
                 "document_semantic": item.ranks.document_semantic,
+                "document_reranker": item.ranks.document_reranker,
             }
             for item in page_results
         ]
@@ -353,13 +420,25 @@ async def search_documents(
                 ),
                 "client_candidate_count": len({item.client_id for item in all_clients}),
                 "document_candidate_count": len(
-                    {item.document_id for item in [*lexical, *semantic]}
+                    {item.document_id for item in all_document_candidates}
+                ),
+                "reranker_candidate_count": len(
+                    {
+                        item.chunk_id
+                        for item in [*reranker_candidates, *corrected_reranker_candidates]
+                    }
+                ),
+                "reranker_model": reranker.profile.model,
+                "reranker_revision": reranker.profile.model_revision,
+                "reranker_duration_ms": (
+                    round(reranker_duration_ms, 2) if reranker_duration_ms is not None else None
                 ),
                 "scores": [round(item.fused_score, 6) for item in page_results],
                 "rank_evidence": rank_evidence,
                 "embedding_profile_id": str(profile.id),
                 "duration_ms": round(duration_ms, 2),
                 "degradation_code": degradation_code,
+                "spelling_fallback_used": spelling_fallback_used,
             },
         )
         logger.info(

@@ -299,6 +299,15 @@ def create_app(
             pipeline_version=resolved_settings.embedding_pipeline_version,
         ),
     )
+    reranker = LocalTEIReranker(
+        resolved_settings.reranker_base_url,
+        RerankerProfileIdentity(
+            provider=resolved_settings.reranker_provider,
+            model=resolved_settings.reranker_model,
+            model_revision=resolved_settings.reranker_model_revision,
+        ),
+        timeout_seconds=resolved_settings.reranker_timeout_seconds,
+    )
     resolved_identity_provider = identity_provider or build_identity_provider(resolved_settings)
 
     @asynccontextmanager
@@ -546,17 +555,21 @@ def create_app(
                     cursor=cursor,
                     authorization=context,
                     provider=request.app.state.embedding_provider,
+                    reranker=request.app.state.reranker_provider,
                     cursor_codec=request.app.state.search_cursor_codec,
                     lexical_limit=settings.search_lexical_candidates,
                     semantic_limit=settings.search_semantic_candidates,
                     client_limit=settings.search_client_candidates,
-                    semantic_threshold=settings.search_semantic_threshold,
+                    semantic_candidate_threshold=(settings.search_semantic_candidate_threshold),
+                    reranker_limit=settings.search_reranker_candidates,
+                    reranker_threshold=settings.search_reranker_threshold,
                     rrf_constant=settings.search_rrf_constant,
                     snippet_length=settings.search_snippet_length,
                     client_excerpt_length=settings.search_client_description_excerpt_length,
                     client_weight=settings.search_client_weight,
                     document_lexical_weight=settings.search_document_lexical_weight,
                     document_semantic_weight=settings.search_document_semantic_weight,
+                    document_reranker_weight=settings.search_document_reranker_weight,
                     ranking_version=settings.search_ranking_version,
                 )
             except InvalidSearchCursor as error:

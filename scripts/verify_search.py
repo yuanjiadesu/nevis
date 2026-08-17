@@ -263,7 +263,7 @@ wait_for_index(other_version, other_tenant, other_advisor)
 query = urllib.parse.urlencode({"q": "Nevis indexing", "limit": 20})
 page = api_request(f"/search?{query}", "nevis-global", "compose-smoke-advisor")
 assert page["mode"] == "hybrid"
-assert page["ranking_version"] == "mixed-rrf-v1"
+assert page["ranking_version"] == "mixed-rrf-v5"
 results = page["results"]
 assert isinstance(results, list) and results
 assert {item["type"] for item in results} >= {"client", "document"}

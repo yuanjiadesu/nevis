@@ -27,6 +27,18 @@ services:
       retries: 30
     volumes: [tei-data:/data]
 
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.1
+    platform: linux/amd64
+    command:
+      ["--model-id", "cross-encoder/ms-marco-MiniLM-L6-v2", "--revision", "c5ee24c"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    volumes: [reranker-data:/data]
+
   migrate:
     build: .
     command: ["alembic", "upgrade", "head"]
@@ -35,6 +47,16 @@ services:
       NEVIS_IDENTITY_PROVIDER: local-header
       NEVIS_DATABASE_URL: postgresql+asyncpg://nevis:nevis@postgres:5432/nevis
       NEVIS_TEI_BASE_URL: http://tei:80
+      NEVIS_RERANKER_BASE_URL: http://reranker:80
+      NEVIS_DOCUMENT_SUMMARIES_ENABLED: ${NEVIS_DOCUMENT_SUMMARIES_ENABLED:-false}
+      NEVIS_FICTIONAL_TEST_DATA: ${NEVIS_FICTIONAL_TEST_DATA:-false}
+      NEVIS_LLM_PROVIDER: ${NEVIS_LLM_PROVIDER:-opencode-go}
+      NEVIS_LLM_MODEL: ${NEVIS_LLM_MODEL:-mimo-v2.5}
+      NEVIS_LLM_ENDPOINT: ${NEVIS_LLM_ENDPOINT:-https://opencode.ai/zen/go/v1/chat/completions}
+      NEVIS_DOCUMENT_SUMMARY_PROVIDER_MAX_TOKENS: ${NEVIS_DOCUMENT_SUMMARY_PROVIDER_MAX_TOKENS:-500}
+      NEVIS_SUMMARY_WORKER_HEARTBEAT_INTERVAL_SECONDS: ${NEVIS_SUMMARY_WORKER_HEARTBEAT_INTERVAL_SECONDS:-5}
+      NEVIS_SUMMARY_WORKER_HEARTBEAT_FRESHNESS_SECONDS: ${NEVIS_SUMMARY_WORKER_HEARTBEAT_FRESHNESS_SECONDS:-20}
+      NEVIS_LLM_API_KEY: ${NEVIS_LLM_API_KEY:-}
     depends_on:
       postgres: {condition: service_healthy}
 
@@ -64,3 +86,4 @@ services:
 volumes:
   postgres-data:
   tei-data:
+  reranker-data:
