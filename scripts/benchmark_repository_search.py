@@ -17,10 +17,11 @@ from nevis.infrastructure.repositories import (
     search_lexical_clients,
     search_semantic_candidates,
 )
+from nevis.performance import build_report
 from nevis.settings import get_settings
 
-DOCUMENTS = int(os.getenv("NEVIS_BENCHMARK_DOCUMENTS", "100000"))
-CLIENTS = int(os.getenv("NEVIS_BENCHMARK_CLIENTS", "10000"))
+DOCUMENTS = int(os.getenv("NEVIS_BENCHMARK_DOCUMENTS", "10000"))
+CLIENTS = int(os.getenv("NEVIS_BENCHMARK_CLIENTS", "1000"))
 ITERATIONS = int(os.getenv("NEVIS_BENCHMARK_ITERATIONS", "20"))
 TARGET_MS = float(os.getenv("NEVIS_SEARCH_P95_TARGET_MS", "800"))
 
@@ -217,28 +218,30 @@ async def benchmark() -> None:
                     (time.perf_counter() - branch_started) * 1_000
                 )
                 timings.append((time.perf_counter() - started) * 1_000)
-            p95 = statistics.quantiles(timings, n=100, method="inclusive")[94]
-            print(
-                json.dumps(
-                    {
-                        "clients": CLIENTS,
-                        "documents": DOCUMENTS,
-                        "iterations": ITERATIONS,
-                        "p50_ms": round(statistics.median(timings), 2),
-                        "p95_ms": round(p95, 2),
-                        "branch_p95_ms": {
-                            name: round(
-                                statistics.quantiles(values, n=100, method="inclusive")[94],
-                                2,
-                            )
-                            for name, values in branch_timings.items()
-                        },
-                        "target_ms": TARGET_MS,
+            report = build_report(
+                workload="repo_capacity",
+                samples=timings,
+                slo_ms=TARGET_MS,
+                corpus={
+                    "clients": CLIENTS,
+                    "documents": DOCUMENTS,
+                    "chunks": DOCUMENTS,
+                },
+                concurrency=1,
+                warm_up=False,
+                metrics={
+                    "iterations": ITERATIONS,
+                    "branch_p95_ms": {
+                        name: round(
+                            statistics.quantiles(values, n=100, method="inclusive")[94],
+                            2,
+                        )
+                        for name, values in branch_timings.items()
                     },
-                    sort_keys=True,
-                )
+                },
             )
-            if p95 > TARGET_MS:
+            print(json.dumps(report, sort_keys=True))
+            if report["outcome"] == "fail":
                 raise RuntimeError("representative exact-search p95 exceeds target")
         finally:
             await transaction.rollback()

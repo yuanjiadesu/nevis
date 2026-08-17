@@ -6,7 +6,7 @@ Nevis gives an adviser one workspace for clients and their documents. The archit
 
 The original brief is complete: client search, semantic document search, optional summaries, tests, Docker Compose, OpenAPI documentation, and a deployed fictional-data environment. The implementation also adds tenant isolation, immutable revisions, lineage, idempotency, degraded search, and an adviser console.
 
-The product is not ready for real client data. Recovery, retention, production browser identity, and operational evidence remain deliberate gates rather than hidden assumptions.
+The product is not ready for real client data. [Reliability](reliability.md) is the SRE gate: three signals, five launch checks, and what not to build.
 
 ## Design rules
 

@@ -5,12 +5,14 @@ Use this runbook for local and user acceptance testing (UAT) operations. Never c
 ## Start and inspect services
 
 ```bash
-docker compose up --build
+make up
 docker compose ps
 curl http://localhost:8001/health/live
 curl http://localhost:8001/health/ready
-docker compose down
+make down
 ```
+
+`make` lists the other operator commands.
 
 `/health/live` checks the API process. `/health/ready` checks PostgreSQL, Text Embeddings Inference (TEI), OpenID Connect (OIDC) keys when enabled, the evidence ranker, and summary-worker parity when enabled.
 
@@ -85,37 +87,21 @@ Add and rehearse backup, restore, and indexing replay before accepting real clie
 
 The semantic candidate floor is `0.60` and the evidence ranker floor is `0.005`. Change either value, branch weights, ordering, or model only with a new ranking version and labelled evidence.
 
-Run provider-backed checks:
-
-```bash
-docker compose exec -T -e NEVIS_EVALUATION_URL=http://127.0.0.1:8000 api \
-  python scripts/evaluate_mixed_search.py
-docker compose exec api python scripts/benchmark_search.py
-```
-
-Run the repository capacity harness from the host:
-
-```bash
-NEVIS_DATABASE_URL=postgresql+asyncpg://nevis:nevis@localhost:5432/nevis \
-  uv run python scripts/benchmark_repository_search.py
-```
-
-Before admitting a tenant above 10,000 indexed documents, repeat with `NEVIS_BENCHMARK_DOCUMENTS=100000`. Inspect tenant-scoped plans with synthetic queries:
+Run provider-backed checks with `make eval`, `make bench`, and `make capacity`. Before admitting a tenant above 10,000 indexed documents, run `make capacity-full`. Inspect tenant-scoped plans with synthetic queries:
 
 ```bash
 docker compose exec -T postgres psql -U nevis -d nevis \
   -f /dev/stdin < scripts/explain_search.sql
 ```
 
-See [Search engine](search-engine.md#measure-search-changes) for current measurements.
+See [Performance](performance.md) for how to measure and [Search engine](search-engine.md#measure-search-changes) for how ranking changes are judged.
 
 ## Run database-backed tests
 
 ```bash
-docker compose -f compose.yaml -f compose.test.yaml -p nevis-integration \
-  up --build --wait postgres migrate
-uv run pytest tests/integration
-docker compose -f compose.yaml -f compose.test.yaml -p nevis-integration down -v
+make test-db-up
+make test-integration
+make test-db-down
 ```
 
 The default test database is `postgresql+asyncpg://nevis:nevis@localhost:5434/nevis`; set `NEVIS_TEST_DATABASE_URL` to use another. An unreachable configured database fails the suite.

@@ -2,10 +2,11 @@
 
 import json
 import os
-import statistics
 import time
 import urllib.parse
 import urllib.request
+
+from nevis.performance import build_report
 
 iterations = int(os.getenv("NEVIS_SEARCH_BENCHMARK_ITERATIONS", "30"))
 target_ms = float(os.getenv("NEVIS_SEARCH_P95_TARGET_MS", "800"))
@@ -31,13 +32,15 @@ for _ in range(iterations):
         assert response.status == 200 and body["mode"] in {"hybrid", "lexical_degraded"}
     samples.append((time.perf_counter() - started) * 1_000)
 
-p95 = statistics.quantiles(samples, n=100, method="inclusive")[94]
-summary = {
-    "iterations": iterations,
-    "p50_ms": round(statistics.median(samples), 2),
-    "p95_ms": round(p95, 2),
-    "target_ms": target_ms,
-}
-print(json.dumps(summary, sort_keys=True))
-if p95 > target_ms:
-    raise SystemExit(f"search p95 {p95:.2f}ms exceeds target {target_ms:.2f}ms")
+report = build_report(
+    workload="search_warm_p95",
+    samples=samples,
+    slo_ms=target_ms,
+    ranking_version="mixed-rrf-v5",
+    concurrency=1,
+    warm_up=True,
+    metrics={"iterations": iterations},
+)
+print(json.dumps(report, sort_keys=True))
+if report["outcome"] == "fail":
+    raise SystemExit(f"search p95 {report['p95_ms']:.2f}ms exceeds target {target_ms:.2f}ms")

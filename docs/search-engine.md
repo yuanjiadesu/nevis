@@ -92,7 +92,7 @@ The CPU bake-off selected MiniLM:
 | MiniLM L6 | Correct ordering across utility bill, address change, and investment evidence | p95 `488.93 ms` for 9 candidates |
 | BGE reranker base | Correct ordering | p95 `11,350.14 ms` for 18 candidates |
 
-The candidate limit is 10 and the one-pass target is p95 below 800 ms. On the 150-document fictional seed, `mixed-rrf-v5` held Recall@5 and MRR at `1.0`, measured NDCG@10 at `0.9968` and Precision@5 at `0.9214`, and returned no nonsense result. Two warm local runs measured p95 between `1.09 s` and `1.19 s`, missing the target; that run recorded no host details. The two spelling retries took `0.73–0.83 s` and `1.09–1.19 s` because they run a bounded second retrieval pass. Do not compare these figures with the N100 UAT concurrency measurements without matching host, corpus, warm-up, and concurrency.
+The candidate limit is 10 and the one-pass target is p95 below 800 ms. Evaluation-set p95 includes spelling retries and is not the one-query API gate. [Performance](performance.md) is the how-to for running the harnesses. Do not compare reports without matching host, corpus, warm-up, and concurrency.
 
 Change the model, thresholds, or candidate policy only with a new ranking version and the same evidence gate.
 

@@ -38,4 +38,4 @@ If indexing misses its objective, test 2–4 worker replicas before changing the
 
 The local embedding runtime accepts at most 32 texts per request, so the worker batches larger documents. A 500,000-character document creates about 625 chunks and needs 20 sequential embedding requests. The job remains one atomic indexing transaction: a later provider failure stores no partial chunks, but the work and database transaction last longer.
 
-Run the repository capacity harness and inspect query plans as described in the [operations runbook](runbook.md#diagnose-search-failures).
+Run the repository capacity harness and inspect query plans as described in the [operations runbook](runbook.md#diagnose-search-failures). [Performance](performance.md) is the how-to; do not treat a previous host table as a current measurement.

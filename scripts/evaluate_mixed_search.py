@@ -8,6 +8,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from nevis.performance import build_report
+
 fixture = json.loads(Path("tests/fixtures/mixed_search_relevance.json").read_text())
 bakeoff = json.loads(Path("tests/fixtures/reranker_bakeoff.json").read_text())
 base_url = os.getenv("NEVIS_EVALUATION_URL", "http://127.0.0.1:8001").rstrip("/")
@@ -25,7 +27,6 @@ def discounted_gain(relevance: list[int]) -> float:
 
 metrics: list[tuple[float, float, float, float]] = []
 latencies: list[float] = []
-case_results: list[dict[str, object]] = []
 result_type_mix = {"client": 0, "document": 0}
 zero_result_count = 0
 for case in fixture["cases"]:
@@ -69,36 +70,31 @@ for case in fixture["cases"]:
         if required := case.get("required_first"):
             assert returned[0] == (required["type"], required["title"]), case["label"]
     metrics.append((recall, precision, reciprocal_rank, ndcg))
-    case_results.append(
-        {
-            "label": case["label"],
-            "split": case["split"],
-            f"recall_at_{recall_k}": round(recall, 4),
-            f"precision_at_{precision_k}": round(precision, 4),
-            "reciprocal_rank": round(reciprocal_rank, 4),
-            f"ndcg_at_{ndcg_k}": round(ndcg, 4),
-            "latency_ms": round(latency_ms, 2),
-        }
-    )
 
-latencies.sort()
-p95_index = max(math.ceil(len(latencies) * 0.95) - 1, 0)
 print(
     json.dumps(
-        {
-            "ranking_version": fixture["ranking_version"],
-            "cases": case_results,
-            "candidate_recall_at_10": bakeoff["candidate_recall_at_10"],
-            f"recall_at_{recall_k}": round(sum(value[0] for value in metrics) / len(metrics), 4),
-            f"precision_at_{precision_k}": round(
-                sum(value[1] for value in metrics) / len(metrics), 4
-            ),
-            "mrr": round(sum(value[2] for value in metrics) / len(metrics), 4),
-            f"ndcg_at_{ndcg_k}": round(sum(value[3] for value in metrics) / len(metrics), 4),
-            "p95_ms": round(latencies[p95_index], 2),
-            "result_type_mix": result_type_mix,
-            "zero_result_rate": round(zero_result_count / len(fixture["cases"]), 4),
-        },
+        build_report(
+            workload="search_eval",
+            samples=latencies,
+            slo_ms=None,
+            ranking_version=str(fixture["ranking_version"]),
+            concurrency=1,
+            warm_up=False,
+            metrics={
+                "candidate_recall_at_10": bakeoff["candidate_recall_at_10"],
+                f"recall_at_{recall_k}": round(
+                    sum(value[0] for value in metrics) / len(metrics), 4
+                ),
+                f"precision_at_{precision_k}": round(
+                    sum(value[1] for value in metrics) / len(metrics), 4
+                ),
+                "mrr": round(sum(value[2] for value in metrics) / len(metrics), 4),
+                f"ndcg_at_{ndcg_k}": round(sum(value[3] for value in metrics) / len(metrics), 4),
+                "zero_result_rate": round(zero_result_count / len(fixture["cases"]), 4),
+                "client_results": result_type_mix["client"],
+                "document_results": result_type_mix["document"],
+            },
+        ),
         sort_keys=True,
     )
 )
