@@ -533,9 +533,12 @@ def create_app(
                     ),
                     request.app.state.embedding_provider.profile,
                     context,
+                    request.app.state.summary_configuration,
                 )
             except IdempotencyConflict as error:
                 raise HTTPException(status_code=409, detail="idempotency key conflict") from error
+            except IntegrityError as error:
+                raise HTTPException(status_code=409, detail="ingestion conflict") from error
             except DocumentAssociationConflict as error:
                 raise HTTPException(
                     status_code=409, detail="document association conflict"

@@ -104,6 +104,25 @@ async def get_client_creation_request(
     )
 
 
+async def acquire_ingestion_locks(
+    session: AsyncSession,
+    *,
+    tenant_id: object,
+    idempotency_key: str,
+    source_reference: str,
+    external_document_id: str,
+) -> None:
+    identities = (
+        f"ingestion-idempotency:{tenant_id}:{idempotency_key}",
+        f"ingestion-document:{tenant_id}:{source_reference}:{external_document_id}",
+    )
+    for identity in identities:
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+            {"identity": identity},
+        )
+
+
 async def create_client_record(
     session: AsyncSession, *, tenant_id: object, command: object, decision: AuthorizationDecision
 ) -> Client:

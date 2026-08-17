@@ -23,22 +23,28 @@ from nevis.domain.documents import (
     request_fingerprint,
 )
 from nevis.domain.embeddings import EmbeddingProfileIdentity
+from nevis.domain.summarization import SummaryConfiguration, SummaryStatus
 from nevis.infrastructure.repositories import (
+    acquire_ingestion_locks,
     append_audit_event,
     count_chunks_for_version,
     create_document_version,
     create_indexing_job,
     ensure_active_embedding_profile,
     get_client,
+    get_client_document_rows,
     get_document_resource_rows,
     get_document_version,
+    get_document_version_rows,
     get_indexing_job_for_version,
     get_ingestion_request,
     get_latest_document_version,
     get_or_create_document,
     get_or_create_source,
     record_ingestion_request,
+    update_document_title,
 )
+from nevis.infrastructure.summary_repository import create_document_summary
 
 
 async def ingest_plain_text(
@@ -68,6 +74,13 @@ async def ingest_plain_text(
                 metadata={"reason": "client_not_found"},
             )
             raise DocumentNotFound("client not found")
+        await acquire_ingestion_locks(
+            session,
+            tenant_id=authorization.tenant_id,
+            idempotency_key=command.idempotency_key,
+            source_reference=source_reference,
+            external_document_id=external_document_id,
+        )
         existing = await get_ingestion_request(
             session, authorization.tenant_id, command.idempotency_key
         )

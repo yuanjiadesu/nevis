@@ -90,6 +90,85 @@ class FailingFakeProvider(DeterministicFakeProvider):
         raise EmbeddingProviderUnavailable("fixture failure")
 
 
+class RecordingBatchProvider(DeterministicFakeProvider):
+    def __init__(self, identity: EmbeddingProfileIdentity, *, fail_on_call: int | None = None):
+        super().__init__(identity)
+        self.batch_sizes: list[int] = []
+        self.fail_on_call = fail_on_call
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.batch_sizes.append(len(texts))
+        if self.fail_on_call == len(self.batch_sizes):
+            raise EmbeddingProviderUnavailable("fixture failure")
+        return await super().embed_documents(texts)
+
+
+@pytest.mark.asyncio
+async def test_worker_batches_documents_larger_than_one_provider_request(
+    database_session_factory: async_sessionmaker[AsyncSession],
+    authorized_context,
+    client_id,
+) -> None:
+    async with database_session_factory() as session:
+        result = await ingest_plain_text(
+            session,
+            command(client_id, key="large-document", content="x" * 26_601),
+            profile(),
+            authorized_context,
+        )
+    provider = RecordingBatchProvider(profile())
+
+    assert await process_indexing_once(database_session_factory, provider)
+
+    async with database_session_factory() as session:
+        job = await session.scalar(
+            select(IndexingJob).where(IndexingJob.document_version_id == result.document_version_id)
+        )
+        chunks = (
+            await session.scalars(
+                select(DocumentChunk).where(
+                    DocumentChunk.document_version_id == result.document_version_id
+                )
+            )
+        ).all()
+    assert provider.batch_sizes == [32, 2]
+    assert job is not None and job.status == IndexingStatus.COMPLETED
+    assert len(chunks) == 34
+
+
+@pytest.mark.asyncio
+async def test_worker_records_failure_without_partial_chunks_when_later_batch_fails(
+    database_session_factory: async_sessionmaker[AsyncSession],
+    authorized_context,
+    client_id,
+) -> None:
+    async with database_session_factory() as session:
+        result = await ingest_plain_text(
+            session,
+            command(client_id, key="large-document-failure", content="x" * 26_601),
+            profile(),
+            authorized_context,
+        )
+    provider = RecordingBatchProvider(profile(), fail_on_call=2)
+
+    assert await process_indexing_once(database_session_factory, provider)
+
+    async with database_session_factory() as session:
+        job = await session.scalar(
+            select(IndexingJob).where(IndexingJob.document_version_id == result.document_version_id)
+        )
+        chunks = (
+            await session.scalars(
+                select(DocumentChunk).where(
+                    DocumentChunk.document_version_id == result.document_version_id
+                )
+            )
+        ).all()
+    assert provider.batch_sizes == [32, 2]
+    assert job is not None and job.status == IndexingStatus.FAILED
+    assert chunks == []
+
+
 @pytest.mark.asyncio
 async def test_worker_records_provider_failure_and_recovers_expired_lease(
     database_session_factory: async_sessionmaker[AsyncSession],
