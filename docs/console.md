@@ -4,7 +4,7 @@ The console lets an adviser manage clients and documents and search one authoris
 
 ## Open the console
 
-Start Nevis and provision `local-advisor` through [Start locally](../README.md#start-locally), then open `http://localhost:8001`.
+Start Nevis and provision `local-advisor` through [Run](../README.md#run), then open `http://localhost:8001`. The hosted UAT console is [nevis.syntax.fitness](https://nevis.syntax.fitness); Cloudflare Access admits named users only.
 
 The local console loads `local-advisor` in `nevis-global`. A signed, HttpOnly marker preserves that fixed context, so the browser sends no adviser or tenant headers.
 
