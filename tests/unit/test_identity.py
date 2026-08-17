@@ -45,6 +45,7 @@ async def test_deterministic_identity_ignores_transport_credentials() -> None:
 def test_environment_rejects_wrong_identity_provider(environment: str, provider: str) -> None:
     with pytest.raises(ValueError, match="identity provider"):
         Settings(
+            _env_file=None,
             environment=environment,  # type: ignore[arg-type]
             identity_provider=provider,  # type: ignore[arg-type]
             search_cursor_signing_key="x" * 32,
@@ -55,15 +56,21 @@ def test_environment_rejects_wrong_identity_provider(environment: str, provider:
 
 def test_production_requires_complete_safe_oidc_settings() -> None:
     with pytest.raises(ValueError, match="OIDC issuer"):
-        Settings(environment="production", search_cursor_signing_key="x" * 32)
+        Settings(
+            _env_file=None,
+            environment="production",
+            search_cursor_signing_key="x" * 32,
+        )
     with pytest.raises(ValueError, match="OIDC audience"):
         Settings(
+            _env_file=None,
             environment="production",
             search_cursor_signing_key="x" * 32,
             oidc_issuer="https://issuer.example",
         )
     with pytest.raises(ValueError, match="algorithms"):
         Settings(
+            _env_file=None,
             environment="production",
             search_cursor_signing_key="x" * 32,
             oidc_issuer="https://issuer.example",

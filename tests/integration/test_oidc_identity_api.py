@@ -44,10 +44,11 @@ class CountingFakeProvider(DeterministicFakeProvider):
 
 def _settings() -> Settings:
     return Settings(
+        _env_file=None,
         environment="production",
         database_url=os.environ["NEVIS_TEST_DATABASE_URL"],
         search_cursor_signing_key="x" * 32,
-        search_semantic_threshold=-1.0,
+        search_semantic_candidate_threshold=-1.0,
         oidc_issuer="https://issuer.example",
         oidc_audience="nevis-api",
         oidc_jwks_fresh_ttl_seconds=30,

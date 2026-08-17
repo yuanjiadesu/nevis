@@ -2,25 +2,45 @@ import os
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 from nevis.infrastructure.database import build_engine, build_session_factory
 from nevis.infrastructure.models import Advisor, AdvisorTenantMembership, Client
 
+DEFAULT_DATABASE_URL = "postgresql+asyncpg://nevis:nevis@localhost:5434/nevis"
+START_DATABASE = (
+    "docker compose -f compose.yaml -f compose.test.yaml -p nevis-integration "
+    "up --build --wait postgres migrate"
+)
+
+os.environ.setdefault("NEVIS_TEST_DATABASE_URL", DEFAULT_DATABASE_URL)
+
 
 @pytest.fixture
 async def database_session_factory():
-    url = os.getenv("NEVIS_TEST_DATABASE_URL")
-    if url is None:
-        pytest.skip("set NEVIS_TEST_DATABASE_URL to run database integration tests")
+    url = os.environ["NEVIS_TEST_DATABASE_URL"]
+    if not url:
+        pytest.skip("NEVIS_TEST_DATABASE_URL is empty; database integration tests are opted out")
     engine = build_engine(url)
-    async with engine.begin() as connection:
-        await connection.execute(
-            text(
-                "TRUNCATE document_chunks, indexing_jobs, ingestion_requests, document_versions, "
-                "documents, document_sources, audit_events, authorization_decisions, "
-                "client_creation_requests, clients, advisor_tenant_memberships, advisors, "
-                "embedding_profiles CASCADE"
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "TRUNCATE runtime_capabilities, document_summaries, document_chunks, "
+                    "indexing_jobs, "
+                    "ingestion_requests, "
+                    "document_versions, documents, document_sources, audit_events, "
+                    "authorization_decisions, client_creation_requests, clients, "
+                    "advisor_tenant_memberships, advisors, embedding_profiles CASCADE"
+                )
             )
+    except (OSError, InterfaceError, OperationalError) as error:
+        await engine.dispose()
+        pytest.fail(
+            f"cannot reach the integration database at {url}\n"
+            f"start it with:\n  {START_DATABASE}\n"
+            f"or set NEVIS_TEST_DATABASE_URL empty to skip these suites\n({error})",
+            pytrace=False,
         )
     try:
         yield build_session_factory(engine)

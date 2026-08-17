@@ -7,12 +7,12 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from nevis.infrastructure.models import Base
-from nevis.settings import get_settings
+from nevis.settings import DatabaseSettings
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option("sqlalchemy.url", DatabaseSettings().database_url)
 target_metadata = Base.metadata
 
 

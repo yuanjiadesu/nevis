@@ -17,14 +17,17 @@ dependencies = [
   "sqlalchemy>=2.0.36,<3",
   "structlog>=24.4,<26",
   "uvicorn[standard]>=0.34,<1",
+  "pyspellchecker>=0.8,<1",
 ]
 
 [dependency-groups]
 dev = [
   "mypy>=1.14,<2",
+  "playwright>=1.58,<2",
   "pip-audit>=2.9,<3",
   "pytest>=9.0.3,<10",
   "pytest-asyncio>=1,<2",
+  "pytest-cov>=6,<8",
   "ruff>=0.9,<1",
   "testcontainers[postgres]>=4.9,<5",
 ]
@@ -59,3 +62,11 @@ addopts = "-ra"
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["nevis"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
