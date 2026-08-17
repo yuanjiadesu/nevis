@@ -194,6 +194,28 @@ def fuse_mixed_candidates(
                 setattr(entry, f"{branch}_score", candidate.score)
                 setattr(entry, f"{branch}_rank", rank)
 
+    if reranked is not None:
+        allowed_documents = {item.candidate.document_id for item in reranked}
+        allowed_documents.update(
+            candidate.document_id for candidate in lexical if candidate.title_match
+        )
+        documents = {
+            document_id: entry
+            for document_id, entry in documents.items()
+            if document_id in allowed_documents
+        }
+        seen_documents: set[uuid.UUID] = set()
+        for rank, item in enumerate(reranked, start=1):
+            document_id = item.candidate.document_id
+            reranked_entry = documents.get(document_id)
+            if reranked_entry is None or document_id in seen_documents:
+                continue
+            seen_documents.add(document_id)
+            reranked_entry.candidate = item.candidate
+            reranked_entry.reranker_score = item.score
+            reranked_entry.reranker_rank = rank
+            reranked_entry.fused += document_reranker_weight / (rrf_constant + rank)
+
     results: list[MixedSearchResult] = []
     for entry in documents.values():
         candidate = entry.candidate

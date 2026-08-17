@@ -80,3 +80,60 @@ def test_mixed_search_migration_adds_client_search_indexes() -> None:
     assert "ix_clients_search_vector" in migration
     assert "ix_clients_tenant_normalized_full_name" in migration
     assert "def downgrade()" in migration
+
+
+def test_client_email_search_migration_rebuilds_the_client_search_vector() -> None:
+    migration = Path("migrations/versions/20260817_0009_client_email_search.py").read_text()
+
+    assert 'down_revision = "20260816_0007"' in migration
+    assert "regexp_replace(coalesce(email, ''), '[^[:alnum:]]+', ' ', 'g')" in migration
+    assert "ix_clients_search_vector" in migration
+    assert "def downgrade()" in migration
+
+
+def test_document_summary_migration_is_version_scoped_and_leaseable() -> None:
+    migration = Path("migrations/versions/20260817_0011_document_summaries.py").read_text()
+
+    assert 'down_revision = "20260817_0010"' in migration
+    assert '"document_summaries"' in migration
+    assert 'sa.UniqueConstraint("document_version_id")' in migration
+    assert '"lease_expires_at"' in migration
+    assert "def downgrade()" in migration
+
+
+def test_typo_tolerant_search_migration_adds_reversible_trigram_indexes() -> None:
+    migration = Path("migrations/versions/20260817_0012_typo_tolerant_search.py").read_text()
+
+    assert 'down_revision = "20260817_0011"' in migration
+    assert "CREATE EXTENSION IF NOT EXISTS pg_trgm" in migration
+    assert "ix_clients_full_name_trgm" in migration
+    assert "ix_documents_title_trgm" in migration
+    assert "gin_trgm_ops" in migration
+    assert "DROP EXTENSION IF EXISTS pg_trgm" in migration
+
+
+def test_runtime_capability_migration_adds_worker_heartbeat() -> None:
+    migration = Path("migrations/versions/20260817_0013_runtime_capabilities.py").read_text()
+
+    assert 'down_revision = "20260817_0012"' in migration
+    assert '"runtime_capabilities"' in migration
+    assert '"identity_hash"' in migration
+    assert '"heartbeat_at"' in migration
+
+
+def test_summary_manual_requeue_migration_adds_a_lifetime_counter() -> None:
+    migration = Path(
+        "migrations/versions/20260817_0015_summary_manual_requeue_count.py"
+    ).read_text()
+
+    assert '"manual_requeue_count"' in migration
+    assert 'server_default="0"' in migration
+    assert "def downgrade()" in migration
+
+
+def test_document_summary_timestamp_migration_matches_the_model() -> None:
+    migration = Path("migrations/versions/20260817_0014_document_summary_timestamps.py").read_text()
+
+    assert 'down_revision = "20260817_0013"' in migration
+    assert '"document_summaries"' in migration
+    assert "nullable=False" in migration

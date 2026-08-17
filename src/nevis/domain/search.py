@@ -4,12 +4,14 @@ import uuid
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
-MIXED_RANKING_VERSION = "mixed-rrf-v1"
+MIXED_RANKING_VERSION = "mixed-rrf-v5"
 
 
 class RetrievalMode(StrEnum):
     HYBRID = "hybrid"
+    LEXICAL_IDENTIFIER = "lexical_identifier"
     LEXICAL_DEGRADED = "lexical_degraded"
+    HYBRID_UNRERANKED = "hybrid_unreranked"
 
 
 class ResultType(StrEnum):

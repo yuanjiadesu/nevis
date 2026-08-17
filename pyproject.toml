@@ -32,6 +32,7 @@ dev = [
 [project.scripts]
 nevis-api = "nevis.main:run"
 nevis-worker = "nevis.workers.main:run"
+nevis-summary-maintenance = "nevis.management:run"
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

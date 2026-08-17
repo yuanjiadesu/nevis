@@ -1,8 +1,15 @@
 import uuid
+from dataclasses import replace
 
 import pytest
 
-from nevis.application.search import _validate_cursor, fuse_candidates, fuse_mixed_candidates
+from nevis.application.search import (
+    _validate_cursor,
+    fuse_candidates,
+    fuse_mixed_candidates,
+    merge_approximate_branches,
+    select_reranker_candidates,
+)
 from nevis.domain.search import (
     MIXED_RANKING_VERSION,
     ClientRetrievalCandidate,
@@ -11,13 +18,30 @@ from nevis.domain.search import (
     InvalidSearchCursor,
     InvalidSearchQuery,
     MatchBand,
+    RerankedCandidate,
     ResultType,
     RetrievalCandidate,
     RetrievalMode,
     SearchQuery,
+    is_identifier_query,
 )
 from nevis.infrastructure.cursors import SearchCursorCodec
 from nevis.settings import Settings
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("john.doe@neviswealth.com", True),
+        ("neviswealth.com", True),
+        ("NevisWealth", False),
+        ("ada@exam", False),
+        ("version 1.2", False),
+        ("address proof", False),
+    ],
+)
+def test_identifier_routing_is_conservative(query: str, expected: bool) -> None:
+    assert is_identifier_query(query) is expected
 
 
 def test_search_query_normalizes_and_fingerprints() -> None:
@@ -78,7 +102,7 @@ def test_cursor_rejects_tampering_and_expiry() -> None:
 
 def test_production_requires_non_default_cursor_key() -> None:
     with pytest.raises(ValueError, match="cursor signing key"):
-        Settings(environment="production")
+        Settings(_env_file=None, environment="production")
 
 
 def _candidate(
@@ -86,7 +110,8 @@ def _candidate(
 ) -> RetrievalCandidate:
     return RetrievalCandidate(
         tenant_id=uuid.UUID(int=1),
-        client_id=None,
+        client_id=uuid.UUID(int=4),
+        client_name="Ada Lovelace",
         source_id=uuid.UUID(int=2),
         document_id=document_id,
         document_version_id=uuid.uuid4(),
@@ -119,6 +144,92 @@ def test_rrf_fusion_is_deterministic_and_aggregates_documents() -> None:
     assert results[0].snippet == "lexical support"
 
 
+def test_reranker_candidates_are_bounded_and_deduplicate_chunks() -> None:
+    first = _candidate(uuid.UUID(int=10), 0.9)
+    second = _candidate(uuid.UUID(int=20), 0.8)
+    first = replace(first, chunk_id=uuid.UUID(int=101))
+    second = replace(second, chunk_id=uuid.UUID(int=102))
+
+    selected = select_reranker_candidates(
+        [first, second],
+        [second, first],
+        rrf_constant=60,
+        lexical_weight=1.0,
+        semantic_weight=1.0,
+        limit=1,
+    )
+
+    assert len(selected) == 1
+
+
+def test_title_evidence_survives_content_reranker_rejection() -> None:
+    candidate = replace(_candidate(uuid.UUID(int=30), 0.8), title_match=True)
+
+    results = fuse_mixed_candidates(
+        clients=[],
+        lexical=[candidate],
+        semantic=[],
+        rrf_constant=60,
+        client_weight=1.0,
+        document_lexical_weight=1.0,
+        document_semantic_weight=1.0,
+        reranked=[],
+        search_decision_id=uuid.uuid4(),
+        excerpt_length=100,
+    )
+
+    assert [item.title for item in results] == [candidate.title]
+
+
+def test_content_evidence_does_not_survive_reranker_rejection() -> None:
+    candidate = replace(_candidate(uuid.UUID(int=31), 0.8), content_match=True)
+
+    results = fuse_mixed_candidates(
+        clients=[],
+        lexical=[candidate],
+        semantic=[],
+        rrf_constant=60,
+        client_weight=1.0,
+        document_lexical_weight=1.0,
+        document_semantic_weight=1.0,
+        reranked=[],
+        search_decision_id=uuid.uuid4(),
+        excerpt_length=100,
+    )
+
+    assert results == []
+
+
+def test_reranking_groups_by_document_and_uses_winning_passage() -> None:
+    opening = replace(
+        _candidate(uuid.UUID(int=10), 0.8, "unrelated opening"),
+        chunk_id=uuid.UUID(int=101),
+    )
+    evidence = replace(
+        opening,
+        chunk_id=uuid.UUID(int=102),
+        snippet="utility bill shows the current residential address",
+    )
+
+    results = fuse_mixed_candidates(
+        clients=[],
+        lexical=[opening],
+        semantic=[evidence],
+        reranked=[RerankedCandidate(evidence, 0.9)],
+        rrf_constant=60,
+        client_weight=1.0,
+        document_lexical_weight=1.0,
+        document_semantic_weight=1.0,
+        document_reranker_weight=1.0,
+        search_decision_id=uuid.UUID(int=4),
+        excerpt_length=180,
+    )
+
+    assert len(results) == 1
+    assert results[0].snippet == evidence.snippet  # type: ignore[union-attr]
+    assert results[0].ranks.document_reranker == 1
+
+
 def test_cursor_context_must_match_search() -> None:
     query = SearchQuery.create("pension", 10, max_length=100, max_limit=50)
     state = CursorState(
@@ -127,6 +238,32 @@ def test_cursor_context_must_match_search() -> None:
         embedding_profile_id=uuid.UUID(int=2),
         mode=RetrievalMode.HYBRID,
         ranking_version=MIXED_RANKING_VERSION,
+        match_band=MatchBand.GENERAL,
+        fused_score=0.1,
+        result_type=ResultType.DOCUMENT,
+        result_id=uuid.UUID(int=3),
+        issued_at=1_000,
+    )
+
+    with pytest.raises(InvalidSearchCursor):
+        _validate_cursor(
+            state,
+            query=query,
+            tenant_id=state.tenant_id,
+            profile_id=state.embedding_profile_id,
+            mode=state.mode,
+            ranking_version=MIXED_RANKING_VERSION,
+        )
+
+
+def test_cursor_from_previous_ranking_version_is_rejected() -> None:
+    query = SearchQuery.create("pension", 10, max_length=100, max_limit=50)
+    state = CursorState(
+        query_fingerprint=query.fingerprint,
+        tenant_id=uuid.UUID(int=1),
+        embedding_profile_id=uuid.UUID(int=2),
+        mode=RetrievalMode.HYBRID,
+        ranking_version="mixed-rrf-v3",
         match_band=MatchBand.GENERAL,
         fused_score=0.1,
         result_type=ResultType.DOCUMENT,
@@ -264,3 +401,54 @@ def test_general_client_rank_is_independent_of_exact_precedence_bands() -> None:
     assert [item.match_band for item in results] == [MatchBand.EXACT_NAME, MatchBand.GENERAL]
     assert results[1].ranks.client_lexical == 1
     assert results[1].fused_score == pytest.approx(1 / 61)
+
+
+def test_approximate_branches_are_below_general_and_use_fixed_rrf() -> None:
+    general_document = _candidate(uuid.UUID(int=10), 0.1)
+    fuzzy_document = _candidate(uuid.UUID(int=20), 0.99)
+    ordinary = fuse_mixed_candidates(
+        clients=[],
+        lexical=[general_document],
+        semantic=[],
+        rrf_constant=60,
+        client_weight=1.0,
+        document_lexical_weight=1.0,
+        document_semantic_weight=1.0,
+        search_decision_id=uuid.UUID(int=4),
+        excerpt_length=20,
+    )
+    approximate = fuse_mixed_candidates(
+        clients=[],
+        lexical=[fuzzy_document],
+        semantic=[],
+        rrf_constant=60,
+        client_weight=1.0,
+        document_lexical_weight=1.0,
+        document_semantic_weight=1.0,
+        search_decision_id=uuid.UUID(int=4),
+        excerpt_length=20,
+    )
+
+    results = merge_approximate_branches(ordinary, [approximate], rrf_constant=60)
+
+    assert [item.match_band for item in results] == [MatchBand.GENERAL, MatchBand.FUZZY]
+    assert results[1].fused_score == pytest.approx(1 / 61)
+
+
+def test_approximate_fusion_deduplicates_an_ordinary_identity() -> None:
+    document = _candidate(uuid.UUID(int=10), 0.8)
+    ordinary = fuse_mixed_candidates(
+        clients=[],
+        lexical=[document],
+        semantic=[],
+        rrf_constant=60,
+        client_weight=1.0,
+        document_lexical_weight=1.0,
+        document_semantic_weight=1.0,
+        search_decision_id=uuid.UUID(int=4),
+        excerpt_length=20,
+    )
+
+    results = merge_approximate_branches(ordinary, [ordinary], rrf_constant=60)
+
+    assert results == ordinary

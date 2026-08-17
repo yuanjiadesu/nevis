@@ -1,0 +1,25 @@
+services:
+  postgres:
+    ports: !override []
+    restart: unless-stopped
+
+  tei:
+    restart: unless-stopped
+
+  reranker:
+    restart: unless-stopped
+
+  api:
+    ports: !override ["127.0.0.1:${NEVIS_API_PORT:-8001}:8000"]
+    restart: unless-stopped
+
+  worker:
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.8.2
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN:-}"]
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    depends_on:
+      api: {condition: service_healthy}

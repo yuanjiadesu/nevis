@@ -11,6 +11,7 @@ from nevis.domain.documents import IngestionCommand
 from nevis.domain.embeddings import EmbeddingProfileIdentity
 from nevis.infrastructure.embeddings import DeterministicFakeProvider, EmbeddingProviderUnavailable
 from nevis.infrastructure.models import AuditEvent, Client
+from nevis.infrastructure.reranking import DeterministicFakeReranker, RerankerProviderUnavailable
 from nevis.main import create_app
 from nevis.settings import Settings
 from nevis.workers.main import process_indexing_once
@@ -23,6 +24,11 @@ def _profile() -> EmbeddingProfileIdentity:
 class QueryFailingProvider(DeterministicFakeProvider):
     async def embed_query(self, text: str) -> list[float]:
         raise EmbeddingProviderUnavailable("fixture unavailable")
+
+
+class FailingReranker(DeterministicFakeReranker):
+    async def rerank(self, query: str, passages: list[str]) -> list[float]:
+        raise RerankerProviderUnavailable("fixture unavailable")
 
 
 @pytest.mark.asyncio
@@ -47,7 +53,19 @@ async def test_protected_search_api_and_lexical_degradation(
                 source_reference="mixed-search-client",
                 creation_authorization_decision_id=authorized_context.decision.decision_id,
             )
-            session.add(matching_client)
+            prefix_client = Client(
+                tenant_id=authorized_context.tenant_id,
+                first_name="Ada",
+                last_name="Lovelace",
+                email="ada@example.com",
+                normalized_email="ada@example.com",
+                description=None,
+                social_links=[],
+                source_type="fixture",
+                source_reference="prefix-search-client",
+                creation_authorization_decision_id=authorized_context.decision.decision_id,
+            )
+            session.add_all([matching_client, prefix_client])
         await ingest_plain_text(
             session,
             IngestionCommand(
@@ -66,13 +84,16 @@ async def test_protected_search_api_and_lexical_degradation(
 
     app = create_app(
         Settings(
+            _env_file=None,
             environment="local",
             database_url=os.environ["NEVIS_TEST_DATABASE_URL"],
-            search_semantic_threshold=-1.0,
+            search_semantic_candidate_threshold=-1.0,
+            search_reranker_threshold=-1.0,
         )
     )
     app.state.session_factory = database_session_factory
     app.state.embedding_provider = provider
+    app.state.reranker_provider = DeterministicFakeReranker()
     result_schema = app.openapi()["components"]["schemas"]["SearchResponse"]["properties"][
         "results"
     ]["items"]
@@ -85,10 +106,25 @@ async def test_protected_search_api_and_lexical_degradation(
         assert response.status_code == 200
         body = response.json()
         assert body["mode"] == "hybrid"
-        assert body["ranking_version"] == "mixed-rrf-v1"
+        assert body["ranking_version"] == "mixed-rrf-v5"
         assert body["results"][0]["type"] == "client"
         assert {item["type"] for item in body["results"]} == {"client", "document"}
         assert body["results"][0]["provenance"]["tenant_id"] == str(authorized_context.tenant_id)
+        prefix = await client.get("/search", params={"q": "ad"}, headers=headers)
+        assert prefix.status_code == 200
+        assert any(
+            item["type"] == "client" and item["provenance"]["client_id"] == str(prefix_client.id)
+            for item in prefix.json()["results"]
+        )
+        email_domain = await client.get("/search", params={"q": "example.com"}, headers=headers)
+        assert email_domain.status_code == 200
+        assert email_domain.json()["mode"] == "lexical_identifier"
+        domain_client_ids = {
+            item["provenance"]["client_id"]
+            for item in email_domain.json()["results"]
+            if item["type"] == "client"
+        }
+        assert {str(matching_client.id), str(prefix_client.id)} <= domain_client_ids
         first_page = await client.get(
             "/search", params={"q": "inheritance tax", "limit": 1}, headers=headers
         )
@@ -117,12 +153,22 @@ async def test_protected_search_api_and_lexical_degradation(
             await client.get("/search", params={"q": "tax", "cursor": "modified"}, headers=headers)
         ).status_code == 400
 
-        app.state.settings.search_semantic_threshold = 1.0
+        app.state.settings.search_semantic_candidate_threshold = 1.0
         empty = await client.get("/search", params={"q": "zzzxqv unmatched"}, headers=headers)
         assert empty.status_code == 200
         assert empty.json()["results"] == []
 
+        app.state.settings.search_semantic_candidate_threshold = -1.0
+        app.state.reranker_provider = FailingReranker()
+        unreranked = await client.get("/search", params={"q": "inheritance tax"}, headers=headers)
+        assert unreranked.status_code == 200
+        assert unreranked.json()["mode"] == "hybrid_unreranked"
+        app.state.reranker_provider = DeterministicFakeReranker()
+
         app.state.embedding_provider = QueryFailingProvider(_profile())
+        identifier = await client.get("/search", params={"q": "example.com"}, headers=headers)
+        assert identifier.status_code == 200
+        assert identifier.json()["mode"] == "lexical_identifier"
         degraded = await client.get("/search", params={"q": "inheritance"}, headers=headers)
         assert degraded.status_code == 200
         assert degraded.json()["mode"] == "lexical_degraded"
@@ -130,6 +176,21 @@ async def test_protected_search_api_and_lexical_degradation(
             "client",
             "document",
         }
+        title_prefix = await client.get("/search", params={"q": "inheri"}, headers=headers)
+        assert title_prefix.status_code == 200
+        assert any(
+            item["type"] == "document" and item["title"] == "Inheritance tax planning"
+            for item in title_prefix.json()["results"]
+        )
+
+        client_only = await client.get("/search", params={"q": "ada@exam"}, headers=headers)
+        assert client_only.status_code == 200
+        assert [item["type"] for item in client_only.json()["results"]] == ["client"]
+        assert client_only.json()["results"][0]["provenance"]["client_id"] == str(prefix_client.id)
+
+        content_prefix = await client.get("/search", params={"q": "allowan"}, headers=headers)
+        assert content_prefix.status_code == 200
+        assert not any(item["type"] == "document" for item in content_prefix.json()["results"])
 
         async with database_session_factory() as session:
             audit_metadata = [
