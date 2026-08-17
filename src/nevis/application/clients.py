@@ -19,6 +19,7 @@ from nevis.domain.clients import (
 )
 from nevis.infrastructure.models import Client
 from nevis.infrastructure.repositories import (
+    acquire_client_creation_locks,
     append_audit_event,
     create_client_record,
     get_client,
@@ -54,6 +55,12 @@ async def create_client(
     normalized = command.normalized()
     fingerprint = client_request_fingerprint(normalized)
     try:
+        await acquire_client_creation_locks(
+            session,
+            tenant_id=authorization.tenant_id,
+            idempotency_key=normalized.idempotency_key,
+            normalized_email=normalized.email,
+        )
         previous = await get_client_creation_request(
             session, authorization.tenant_id, normalized.idempotency_key
         )
