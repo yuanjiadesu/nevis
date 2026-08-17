@@ -18,11 +18,23 @@ The system SHALL retrieve a document only through the authorized tenant relation
 - **THEN** the system returns the same generic `404` response in either case
 
 ### Requirement: Current document state and lineage
-The system SHALL return the document identity, title, source, client association when present, current immutable version, current indexing status, tenant identity, originating ingestion authorization decision, and retrieval authorization decision without returning document content.
+The system SHALL return the document identity, title, source, client association when present, current immutable version, current indexing status, tenant identity, originating ingestion authorization decision, retrieval authorization decision, and `summary: string | null` without returning document content from its safe document resource representation. The system SHALL return current plain-text content only from the separately authorized document edit representation.
 
 #### Scenario: Associated current document is returned
 - **WHEN** an authorized advisor retrieves a document created through client-scoped ingestion
-- **THEN** the representation attributes it to its tenant, client, source, current version, indexing state, ingestion decision, and retrieval decision
+- **THEN** the safe resource representation attributes it to its tenant, client, source, current version, indexing state, ingestion decision, and retrieval decision without content
+
+#### Scenario: Ready summary is returned
+- **WHEN** the current document version has a ready summary
+- **THEN** the safe resource representation returns that bounded summary without document content
+
+#### Scenario: Summary is absent
+- **WHEN** summary generation is disabled, pending, failed, or unsafe
+- **THEN** the safe resource representation returns `summary: null`
+
+#### Scenario: Authorized editor retrieves current content
+- **WHEN** an authorized advisor requests an edit representation for a document created through client-scoped ingestion
+- **THEN** the representation contains only the current plain-text content needed to create a revision and its current version identity
 
 #### Scenario: Preserved legacy document is returned
 - **WHEN** an authorized advisor retrieves a document that predates mandatory client association

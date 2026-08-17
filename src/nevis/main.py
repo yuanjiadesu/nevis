@@ -106,11 +106,24 @@ from nevis.domain.search import (
     SearchDependencyUnavailable,
     SearchQuery,
 )
+from nevis.domain.summarization import SummaryConfiguration
 from nevis.infrastructure.cursors import SearchCursorCodec
 from nevis.infrastructure.database import build_engine, build_session_factory
 from nevis.infrastructure.embeddings import LocalTEIProvider
 from nevis.infrastructure.identity import build_identity_provider
+from nevis.infrastructure.local_console import LocalConsoleCookieCodec
 from nevis.infrastructure.logging import configure_logging
+from nevis.infrastructure.management_cursors import (
+    InvalidManagementCursor,
+    ManagementCursorCodec,
+    ManagementCursorState,
+)
+from nevis.infrastructure.repositories import (
+    get_active_membership,
+    get_advisor_by_external_id,
+    get_global_tenant,
+)
+from nevis.infrastructure.reranking import LocalTEIReranker
 from nevis.settings import Settings, get_settings
 
 bearer_scheme = HTTPBearer(auto_error=False)

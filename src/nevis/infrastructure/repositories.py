@@ -22,6 +22,7 @@ from nevis.infrastructure.models import (
     Document,
     DocumentChunk,
     DocumentSource,
+    DocumentSummary,
     DocumentVersion,
     EmbeddingProfile,
     IndexingJob,
@@ -318,15 +319,28 @@ async def get_or_create_document(
     return document
 
 
+async def update_document_title(
+    session: AsyncSession, tenant_id: object, document_id: object, title: str
+) -> Document | None:
+    document = await session.scalar(
+        select(Document).where(Document.tenant_id == tenant_id, Document.id == document_id)
+    )
+    if document is not None:
+        document.title = title
+        await session.flush()
+    return document
+
+
 async def get_document_resource_rows(
     session: AsyncSession, tenant_id: object, document_id: object
-) -> tuple[Document, DocumentSource, DocumentVersion, IndexingJob] | None:
+) -> tuple[Document, DocumentSource, DocumentVersion, IndexingJob, DocumentSummary | None] | None:
     row = (
         await session.execute(
-            select(Document, DocumentSource, DocumentVersion, IndexingJob)
+            select(Document, DocumentSource, DocumentVersion, IndexingJob, DocumentSummary)
             .join(DocumentSource, DocumentSource.id == Document.source_id)
             .join(DocumentVersion, DocumentVersion.document_id == Document.id)
             .join(IndexingJob, IndexingJob.document_version_id == DocumentVersion.id)
+            .outerjoin(DocumentSummary, DocumentSummary.document_version_id == DocumentVersion.id)
             .where(Document.tenant_id == tenant_id, Document.id == document_id)
             .order_by(DocumentVersion.version_number.desc())
             .limit(1)
@@ -334,7 +348,67 @@ async def get_document_resource_rows(
     ).one_or_none()
     if row is None:
         return None
-    return row[0], row[1], row[2], row[3]
+    return row[0], row[1], row[2], row[3], row[4]
+
+
+async def get_client_document_rows(
+    session: AsyncSession,
+    tenant_id: object,
+    client_id: object,
+    *,
+    limit: int,
+    before_created_at: datetime | None = None,
+    before_id: object | None = None,
+) -> list[tuple[Document, DocumentSource, DocumentVersion, IndexingJob, DocumentSummary | None]]:
+    latest_version = (
+        select(func.max(DocumentVersion.version_number))
+        .where(DocumentVersion.document_id == Document.id)
+        .correlate(Document)
+        .scalar_subquery()
+    )
+    statement = (
+        select(Document, DocumentSource, DocumentVersion, IndexingJob, DocumentSummary)
+        .join(DocumentSource, DocumentSource.id == Document.source_id)
+        .join(
+            DocumentVersion,
+            and_(
+                DocumentVersion.document_id == Document.id,
+                DocumentVersion.version_number == latest_version,
+            ),
+        )
+        .join(IndexingJob, IndexingJob.document_version_id == DocumentVersion.id)
+        .outerjoin(DocumentSummary, DocumentSummary.document_version_id == DocumentVersion.id)
+        .where(Document.tenant_id == tenant_id, Document.client_id == client_id)
+    )
+    if before_created_at is not None and before_id is not None:
+        statement = statement.where(
+            or_(
+                Document.created_at < before_created_at,
+                and_(Document.created_at == before_created_at, Document.id < before_id),
+            )
+        )
+    rows = await session.execute(
+        statement.order_by(Document.created_at.desc(), Document.id.desc()).limit(limit)
+    )
+    return [(row[0], row[1], row[2], row[3], row[4]) for row in rows]
+
+
+async def get_document_version_rows(
+    session: AsyncSession, tenant_id: object, document_id: object
+) -> list[tuple[DocumentVersion, IndexingJob]] | None:
+    document = await session.scalar(
+        select(Document.id).where(Document.tenant_id == tenant_id, Document.id == document_id)
+    )
+    if document is None:
+        return None
+    rows = await session.execute(
+        select(DocumentVersion, IndexingJob)
+        .join(IndexingJob, IndexingJob.document_version_id == DocumentVersion.id)
+        .where(DocumentVersion.tenant_id == tenant_id, DocumentVersion.document_id == document_id)
+        .order_by(DocumentVersion.version_number.desc())
+        .limit(200)
+    )
+    return [(row[0], row[1]) for row in rows]
 
 
 async def get_latest_document_version(

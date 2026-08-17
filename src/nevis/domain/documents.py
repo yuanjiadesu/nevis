@@ -4,6 +4,8 @@ import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 
+from nevis.domain.summarization import SummaryStatus
+
 
 class IndexingStatus(StrEnum):
     QUEUED = "queued"
@@ -89,6 +91,42 @@ class DocumentResource:
     indexing_status: IndexingStatus
     ingestion_authorization_decision_id: uuid.UUID
     retrieval_authorization_decision_id: uuid.UUID
+    created_at: str
+    summary_status: SummaryStatus
+    summary: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class EditableDocument:
+    document_id: uuid.UUID
+    client_id: uuid.UUID
+    source_reference: str
+    external_document_id: str
+    title: str
+    content: str
+    current_document_version_id: uuid.UUID
+    current_version_number: int
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentTimelineItem:
+    document_id: uuid.UUID
+    client_id: uuid.UUID
+    title: str
+    current_document_version_id: uuid.UUID
+    current_version_number: int
+    indexing_status: IndexingStatus
+    created_at: str
+    summary_status: SummaryStatus
+    summary: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentVersionTimelineItem:
+    document_version_id: uuid.UUID
+    document_id: uuid.UUID
+    version_number: int
+    indexing_status: IndexingStatus
     created_at: str
 
 
