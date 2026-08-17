@@ -68,10 +68,18 @@ class DocumentVersionStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentVersionContent:
+    document_version_id: uuid.UUID
+    document_id: uuid.UUID
+    version_number: int
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentResource:
     document_id: uuid.UUID
     tenant_id: uuid.UUID
-    client_id: uuid.UUID | None
+    client_id: uuid.UUID
     source_id: uuid.UUID
     source_reference: str
     external_document_id: str

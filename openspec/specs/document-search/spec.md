@@ -63,18 +63,22 @@ The system SHALL validate normalized query text and page size, return one list o
 - **THEN** the system returns a validation error without executing retrieval
 
 ### Requirement: Result and audit provenance
-The system SHALL make every client result attributable to its tenant, client, creation authorization decision, and search authorization decision, and every document result attributable to its tenant, client association when present, source, document, current document version, embedding profile, indexing authorization decision, and search authorization decision. It SHALL persist a credential-safe mixed-search audit record without raw query text, snippets, client PII, document content, vectors, or provider credentials.
+The system SHALL make every client result attributable to its tenant, client, creation authorization decision, and search authorization decision, and every document result attributable to its tenant, client, source, document, current document version, embedding profile, indexing authorization decision, and search authorization decision. Every document result SHALL also carry its owning client's display name so the result is readable without a further request. It SHALL persist a credential-safe mixed-search audit record without raw query text, snippets, client PII, document content, vectors, or provider credentials.
 
 #### Scenario: Search result is returned
 - **WHEN** client and document results are included in one response
 - **THEN** each result's discriminator and provenance identify its required type-specific lineage and the common search authorization decision
+
+#### Scenario: Document result identifies its client
+- **WHEN** a search returns a document result
+- **THEN** the result carries its owning client's identity and display name, and no document result is returned without one
 
 #### Scenario: Search completes
 - **WHEN** an allowed search succeeds in hybrid, lexical-degraded, or empty-result mode
 - **THEN** the audit trail records a query fingerprint, typed result identities, mixed-ranking version, retrieval mode, bounded score metadata, result count, and latency without recording raw customer content
 
 ### Requirement: Deterministic mixed client and document ranking
-The system SHALL combine independently ranked authorized client and document candidates into one deterministic list without comparing raw lexical and semantic scores directly. Exact client identity matches SHALL receive their defined precedence, and remaining candidates SHALL use a versioned rank-fusion policy with stable type and identity tie-breakers.
+The system SHALL combine independently ranked authorized client and document candidates into one deterministic list without comparing raw lexical, semantic, and trigram scores directly. Exact client identity matches SHALL receive their defined precedence, trigram and corrected-query candidates SHALL occupy the lowest match band beneath all general candidates, and candidates SHALL use a versioned rank-fusion policy with stable type and identity tie-breakers.
 
 #### Scenario: Client and document matches coexist
 - **WHEN** a query has authorized client and current-document matches

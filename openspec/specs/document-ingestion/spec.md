@@ -54,7 +54,7 @@ The system SHALL reject binary/file-upload ingestion and SHALL not perform PDF/D
 - **THEN** the system returns a validation error and creates no document or indexing record
 
 ### Requirement: Stable document-to-client association
-The system SHALL bind a newly created document to exactly one same-tenant client and SHALL include the client identity in ingestion idempotency fingerprints and document provenance.
+The system SHALL bind every document to exactly one same-tenant client, SHALL reject any document record that has no client, and SHALL include the client identity in ingestion idempotency fingerprints and document provenance.
 
 #### Scenario: Existing document is submitted through another client
 - **WHEN** a source and external document identifier already identify a document associated with a different client in the same tenant
@@ -64,9 +64,6 @@ The system SHALL bind a newly created document to exactly one same-tenant client
 - **WHEN** an idempotency key is reused with a different client identity
 - **THEN** the system treats the request as an idempotency conflict and leaves all document records unchanged
 
-### Requirement: Preserved legacy document lineage
-The system SHALL preserve documents that predate client association as explicitly unassociated legacy records, SHALL keep them searchable and retrievable under their existing tenant authorization, and SHALL require a client for every new ingestion after this capability is deployed.
-
-#### Scenario: Existing database is migrated
-- **WHEN** the client-association schema is applied to existing documents
-- **THEN** their identities, versions, chunks, embeddings, search behavior, and authorization lineage remain unchanged and their client association is explicitly absent
+#### Scenario: Document revision reuses the existing association
+- **WHEN** an advisor submits a new version of an existing document
+- **THEN** the system reuses that document's client association without requiring the advisor to restate it

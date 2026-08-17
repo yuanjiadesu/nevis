@@ -575,18 +575,21 @@ authorized_chunks AS MATERIALIZED (
         c.tenant_id, c.source_id, c.document_id, c.document_version_id,
         c.embedding_profile_id, c.authorization_decision_id,
         c.id AS chunk_id, c.content, c.content_search_vector, c.embedding,
-        d.client_id, d.title, d.title_search_vector
+        d.client_id, d.title, d.title_search_vector,
+        cl.first_name || ' ' || cl.last_name AS client_name
     FROM document_chunks c
     JOIN document_versions v ON v.id = c.document_version_id
     JOIN latest_versions lv
       ON lv.document_id = v.document_id AND lv.version_number = v.version_number
     JOIN documents d ON d.id = c.document_id
+    JOIN clients cl ON cl.id = d.client_id
     JOIN indexing_jobs j
       ON j.document_version_id = c.document_version_id
      AND j.embedding_profile_id = c.embedding_profile_id
     WHERE c.tenant_id = :tenant_id
       AND v.tenant_id = :tenant_id
       AND d.tenant_id = :tenant_id
+      AND cl.tenant_id = :tenant_id
       AND j.tenant_id = :tenant_id
       AND c.embedding_profile_id = :profile_id
       AND c.authorization_result = 'allow'
@@ -599,15 +602,21 @@ authorized_chunks AS MATERIALIZED (
 def _candidate_from_mapping(row: RowMapping) -> RetrievalCandidate:
     return RetrievalCandidate(
         tenant_id=cast(UUID, row["tenant_id"]),
-        client_id=cast(UUID | None, row["client_id"]),
+        client_id=cast(UUID, row["client_id"]),
+        client_name=str(row["client_name"]),
         source_id=cast(UUID, row["source_id"]),
         document_id=cast(UUID, row["document_id"]),
         document_version_id=cast(UUID, row["document_version_id"]),
         embedding_profile_id=cast(UUID, row["embedding_profile_id"]),
         indexing_authorization_decision_id=cast(UUID, row["authorization_decision_id"]),
         title=str(row["title"]),
+        chunk_id=cast(UUID, row["chunk_id"]),
+        content=str(row["content"]),
         snippet=str(row["snippet"]),
         score=float(cast(float, row["score"])),
+        title_match=bool(row.get("title_match", False)),
+        content_match=bool(row.get("content_match", False)),
+        semantic_match=bool(row.get("semantic_match", False)),
     )
 
 
@@ -660,21 +669,34 @@ async def search_lexical_candidates(
               AND c.tenant_id = :tenant_id
               AND c.embedding_profile_id = :profile_id
               AND c.authorization_result = 'allow'
-              AND d.title_search_vector @@ pq.value
+              AND (
+                  d.title_search_vector @@ pq.title_value
+                  OR d.title_search_vector @@ pq.title_prefix_value
+              )
         ),
         ranked AS (
             SELECT
                 c.tenant_id, d.client_id, c.source_id, c.document_id,
                 c.document_version_id, c.embedding_profile_id,
                 c.authorization_decision_id, c.id AS chunk_id, c.content, d.title,
+                cl.first_name || ' ' || cl.last_name AS client_name,
+                (
+                    d.title_search_vector @@ pq.title_value
+                    OR d.title_search_vector @@ pq.title_prefix_value
+                ) AS title_match,
+                c.content_search_vector @@ pq.content_value AS content_match,
+                pq.content_value,
                 greatest(
-                    ts_rank_cd(d.title_search_vector, pq.value),
-                    ts_rank_cd(c.content_search_vector, pq.value)
+                    ts_rank_cd(d.title_search_vector, pq.title_value),
+                    COALESCE(ts_rank_cd(d.title_search_vector, pq.title_prefix_value), 0),
+                    ts_rank_cd(c.content_search_vector, pq.content_value)
                 ) AS score
             FROM matching_chunk_ids matches
             JOIN document_chunks c ON c.id = matches.chunk_id
             JOIN documents d
               ON d.id = c.document_id AND d.tenant_id = :tenant_id
+            JOIN clients cl
+              ON cl.id = d.client_id AND cl.tenant_id = :tenant_id
             JOIN document_versions v
               ON v.id = c.document_version_id AND v.tenant_id = :tenant_id
             JOIN indexing_jobs j
@@ -692,9 +714,21 @@ async def search_lexical_candidates(
                     AND newer.version_number > v.version_number
               )
         )
-        SELECT tenant_id, client_id, source_id, document_id, document_version_id,
-               embedding_profile_id, authorization_decision_id, title,
-               left(content, :snippet_length) AS snippet, score
+        SELECT tenant_id, client_id, client_name, source_id, document_id,
+               document_version_id, embedding_profile_id, authorization_decision_id,
+               title, chunk_id, content, title_match, content_match,
+               false AS semantic_match,
+               left(
+                   CASE
+                       WHEN content_match THEN ts_headline(
+                           'english', content, content_value,
+                           'StartSel=, StopSel=, MaxFragments=1, MaxWords=35, MinWords=12'
+                       )
+                       ELSE content
+                   END,
+                   :snippet_length
+               ) AS snippet,
+               score
         FROM ranked
         WHERE score > 0
         ORDER BY score DESC, chunk_id ASC
@@ -733,8 +767,10 @@ async def search_semantic_candidates(
             SELECT ac.*, 1 - (ac.embedding <=> CAST(:embedding AS vector)) AS score
             FROM authorized_chunks ac
         )
-        SELECT tenant_id, client_id, source_id, document_id, document_version_id,
-               embedding_profile_id, authorization_decision_id, title,
+        SELECT tenant_id, client_id, client_name, source_id, document_id,
+               document_version_id, embedding_profile_id, authorization_decision_id,
+               title, chunk_id, content, false AS title_match,
+               false AS content_match, true AS semantic_match,
                left(content, :snippet_length) AS snippet, score
         FROM ranked
         WHERE score >= :threshold

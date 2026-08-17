@@ -134,13 +134,17 @@ def fuse_mixed_candidates(
             SearchResult(
                 type=ResultType.DOCUMENT,
                 title=candidate.title,
+                client_name=candidate.client_name,
                 snippet=candidate.snippet,
                 fused_score=entry.fused,
                 match_band=MatchBand.GENERAL,
-                scores=ComponentScores(entry.lexical_score, entry.semantic_score),
+                scores=ComponentScores(
+                    entry.lexical_score, entry.semantic_score, entry.reranker_score
+                ),
                 ranks=BranchRanks(
                     document_lexical=entry.lexical_rank,
                     document_semantic=entry.semantic_rank,
+                    document_reranker=entry.reranker_rank,
                 ),
                 provenance=DocumentSearchProvenance(
                     tenant_id=candidate.tenant_id,

@@ -68,12 +68,13 @@ class BranchRanks:
     client_lexical: int | None = None
     document_lexical: int | None = None
     document_semantic: int | None = None
+    document_reranker: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class DocumentSearchProvenance:
     tenant_id: uuid.UUID
-    client_id: uuid.UUID | None
+    client_id: uuid.UUID
     source_id: uuid.UUID
     document_id: uuid.UUID
     document_version_id: uuid.UUID
@@ -86,6 +87,7 @@ class DocumentSearchProvenance:
 class SearchResult:
     type: ResultType
     title: str
+    client_name: str
     snippet: str
     fused_score: float
     match_band: MatchBand
@@ -128,7 +130,8 @@ class SearchPage:
 @dataclass(frozen=True, slots=True)
 class RetrievalCandidate:
     tenant_id: uuid.UUID
-    client_id: uuid.UUID | None
+    client_id: uuid.UUID
+    client_name: str
     source_id: uuid.UUID
     document_id: uuid.UUID
     document_version_id: uuid.UUID

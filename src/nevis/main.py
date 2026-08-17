@@ -889,11 +889,14 @@ def create_app(
                     else SearchResultResponse(
                         type="document",
                         title=item.title,
+                        client_name=item.client_name,
                         snippet=item.snippet,
                         fused_score=item.fused_score,
                         match_band=int(item.match_band),
                         scores=SearchScoresResponse(
-                            lexical=item.scores.lexical, semantic=item.scores.semantic
+                            lexical=item.scores.lexical,
+                            semantic=item.scores.semantic,
+                            reranker=item.scores.reranker,
                         ),
                         ranks=SearchRanksResponse(
                             **{
