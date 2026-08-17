@@ -19,6 +19,10 @@ class ClientNotFound(ClientError):
     pass
 
 
+class ClientUpdateConflict(ClientError):
+    pass
+
+
 class ClientCreationOutcome(StrEnum):
     CREATED = "created"
     REPLAYED = "replayed"
@@ -93,6 +97,33 @@ class CreateClientCommand:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class UpdateClientCommand:
+    first_name: str
+    last_name: str
+    email: str
+    description: str | None
+    social_links: tuple[str, ...]
+    request_id: str
+
+    def normalized(self) -> "UpdateClientCommand":
+        first_name = self.first_name.strip()
+        last_name = self.last_name.strip()
+        description = self.description.strip() if self.description else None
+        if not first_name or len(first_name) > 100 or not last_name or len(last_name) > 100:
+            raise ValueError("first_name and last_name are required and bounded")
+        if description is not None and len(description) > 2_000:
+            raise ValueError("description is too long")
+        return UpdateClientCommand(
+            first_name=first_name,
+            last_name=last_name,
+            email=normalize_email(self.email),
+            description=description,
+            social_links=validate_social_links(self.social_links),
+            request_id=self.request_id,
+        )
+
+
 def client_request_fingerprint(command: CreateClientCommand) -> str:
     normalized = command.normalized()
     canonical = json.dumps(
@@ -132,3 +163,9 @@ class ClientResource:
 class ClientCreationResult:
     client: ClientResource
     outcome: ClientCreationOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class ClientPage:
+    clients: tuple[ClientResource, ...]
+    has_more: bool

@@ -14,12 +14,15 @@ __pycache__/
 .coverage
 coverage.xml
 htmlcov/
+coverage/
 dist/
 build/
 *.egg-info/
 
 .vscode/
 node_modules/
-web/dist/
+.pnpm-store/
 playwright-report/
 test-results/
+.gstack/
+/tmp/

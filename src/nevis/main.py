@@ -1,23 +1,74 @@
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from datetime import datetime
+from pathlib import Path
+from typing import Annotated
 
 import structlog
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi import (
+    Cookie,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
-from sqlalchemy.exc import SQLAlchemyError
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from nevis.api_models import (
+    ClientDocumentPageResponse,
+    ClientDocumentTimelineItemResponse,
+    ClientPageResponse,
+    ClientResponse,
+    ClientSearchProvenanceResponse,
+    ClientSearchResultResponse,
+    ConsoleContextResponse,
+    CreateClientRequest,
+    CreateClientResponse,
+    DocumentEditResponse,
+    DocumentResourceResponse,
+    DocumentRevisionRequest,
+    DocumentVersionContentResponse,
+    DocumentVersionStatusResponse,
+    DocumentVersionTimelineItemResponse,
+    DocumentVersionTimelineResponse,
+    IngestDocumentRequest,
+    IngestDocumentResponse,
+    SearchProvenanceResponse,
+    SearchRanksResponse,
+    SearchResponse,
+    SearchResultResponse,
+    SearchScoresResponse,
+    UpdateClientRequest,
+    WorkspaceSummaryResponse,
+)
 from nevis.application.authorization import authorize
-from nevis.application.clients import create_client, retrieve_client
+from nevis.application.clients import (
+    create_client,
+    list_client_records,
+    retrieve_client,
+    update_client,
+)
 from nevis.application.health import readiness
 from nevis.application.ingestion import (
     document_version_status,
     ingest_plain_text,
+    list_client_documents,
+    list_document_versions,
     retrieve_document,
+    retrieve_document_version_content,
+    retrieve_editable_document,
+    revise_document,
 )
 from nevis.application.search import search_documents
 from nevis.domain.authorization import (
@@ -25,7 +76,13 @@ from nevis.domain.authorization import (
     AuthorizationContext,
     AuthorizationDenied,
 )
-from nevis.domain.clients import ClientConflict, ClientNotFound, CreateClientCommand
+from nevis.domain.clients import (
+    ClientConflict,
+    ClientNotFound,
+    ClientUpdateConflict,
+    CreateClientCommand,
+    UpdateClientCommand,
+)
 from nevis.domain.documents import (
     DocumentAssociationConflict,
     DocumentNotFound,
@@ -36,10 +93,12 @@ from nevis.domain.embeddings import EmbeddingProfileIdentity
 from nevis.domain.identity import (
     AuthenticatedIdentity,
     IdentityCredentials,
+    IdentityMode,
     IdentityProvider,
     IdentityProviderUnavailable,
     InvalidIdentity,
 )
+from nevis.domain.reranking import RerankerProfileIdentity
 from nevis.domain.search import (
     ClientSearchResult,
     InvalidSearchCursor,
@@ -59,143 +118,6 @@ BearerCredential = Annotated[HTTPAuthorizationCredentials | None, Depends(bearer
 logger = structlog.get_logger(__name__)
 
 
-class IngestDocumentRequest(BaseModel):
-    source_reference: str = Field(min_length=1, max_length=200)
-    external_document_id: str = Field(min_length=1, max_length=255)
-    title: str = Field(min_length=1, max_length=500)
-    content: str = Field(min_length=1, max_length=500_000)
-
-
-class IngestDocumentResponse(BaseModel):
-    client_id: uuid.UUID
-    document_id: uuid.UUID
-    document_version_id: uuid.UUID
-    version_number: int
-    indexing_status: str
-    outcome: str
-
-
-class DocumentVersionStatusResponse(BaseModel):
-    document_version_id: uuid.UUID
-    document_id: uuid.UUID
-    version_number: int
-    indexing_status: str
-    queued_at: str | None
-    completed_at: str | None
-    failed_at: str | None
-    failure_code: str | None
-    chunk_count: int
-
-
-class CreateClientRequest(BaseModel):
-    first_name: str = Field(min_length=1, max_length=100)
-    last_name: str = Field(min_length=1, max_length=100)
-    email: str = Field(min_length=3, max_length=320)
-    description: str | None = Field(default=None, max_length=2_000)
-    social_links: list[str] = Field(default_factory=list, max_length=10)
-    source_type: str = Field(min_length=1, max_length=80)
-    source_reference: str = Field(min_length=1, max_length=200)
-
-
-class ClientResponse(BaseModel):
-    id: uuid.UUID
-    tenant_id: uuid.UUID
-    first_name: str
-    last_name: str
-    email: str
-    description: str | None
-    social_links: list[str]
-    source_type: str
-    source_reference: str
-    creation_authorization_decision_id: uuid.UUID
-    retrieval_authorization_decision_id: uuid.UUID | None
-    created_at: str
-    updated_at: str
-
-
-class CreateClientResponse(ClientResponse):
-    outcome: str
-
-
-class DocumentResourceResponse(BaseModel):
-    document_id: uuid.UUID
-    tenant_id: uuid.UUID
-    client_id: uuid.UUID | None
-    source_id: uuid.UUID
-    source_reference: str
-    external_document_id: str
-    title: str
-    current_document_version_id: uuid.UUID
-    current_version_number: int
-    indexing_status: str
-    ingestion_authorization_decision_id: uuid.UUID
-    retrieval_authorization_decision_id: uuid.UUID
-    created_at: str
-
-
-class SearchScoresResponse(BaseModel):
-    lexical: float | None
-    semantic: float | None
-
-
-class SearchRanksResponse(BaseModel):
-    client_lexical: int | None
-    document_lexical: int | None
-    document_semantic: int | None
-
-
-class SearchProvenanceResponse(BaseModel):
-    tenant_id: uuid.UUID
-    client_id: uuid.UUID | None
-    source_id: uuid.UUID
-    document_id: uuid.UUID
-    document_version_id: uuid.UUID
-    embedding_profile_id: uuid.UUID
-    indexing_authorization_decision_id: uuid.UUID
-    search_authorization_decision_id: uuid.UUID
-
-
-class SearchResultResponse(BaseModel):
-    type: Literal["document"]
-    title: str
-    snippet: str
-    fused_score: float
-    match_band: int
-    scores: SearchScoresResponse
-    ranks: SearchRanksResponse
-    provenance: SearchProvenanceResponse
-
-
-class ClientSearchProvenanceResponse(BaseModel):
-    tenant_id: uuid.UUID
-    client_id: uuid.UUID
-    creation_authorization_decision_id: uuid.UUID
-    search_authorization_decision_id: uuid.UUID
-
-
-class ClientSearchResultResponse(BaseModel):
-    type: Literal["client"]
-    title: str
-    email: str
-    excerpt: str | None
-    fused_score: float
-    match_band: int
-    ranks: SearchRanksResponse
-    provenance: ClientSearchProvenanceResponse
-
-
-MixedSearchResultResponse = Annotated[
-    ClientSearchResultResponse | SearchResultResponse, Field(discriminator="type")
-]
-
-
-class SearchResponse(BaseModel):
-    ranking_version: str
-    mode: str
-    results: list[MixedSearchResultResponse]
-    next_cursor: str | None
-
-
 @dataclass(frozen=True, slots=True)
 class AuthenticatedRequestContext:
     identity: AuthenticatedIdentity
@@ -206,11 +128,21 @@ class AuthenticatedRequestContext:
 async def authenticate_request(
     request: Request,
     bearer: BearerCredential,
+    nevis_local_console: Annotated[str | None, Cookie(include_in_schema=False)] = None,
     x_request_id: Annotated[str | None, Header(max_length=100)] = None,
     x_nevis_tenant: Annotated[str | None, Header(max_length=80)] = None,
     x_nevis_advisor: Annotated[str | None, Header(max_length=200)] = None,
 ) -> AuthenticatedRequestContext:
     request_id = x_request_id or str(uuid.uuid4())
+    if (
+        request.app.state.settings.environment == "local"
+        and request.app.state.local_console_cookie.accepts(nevis_local_console)
+    ):
+        return AuthenticatedRequestContext(
+            AuthenticatedIdentity("local-advisor", IdentityMode.LOCAL_HEADER, "local-console"),
+            "nevis-global",
+            request_id,
+        )
     provider: IdentityProvider = request.app.state.identity_provider
     bearer_token = bearer.credentials if bearer and bearer.scheme.lower() == "bearer" else None
     try:
@@ -247,9 +179,10 @@ async def authenticate_request(
         issuer_id=identity.issuer_id,
         outcome="authenticated",
     )
-    if not x_nevis_tenant:
+    tenant_slug = x_nevis_tenant
+    if not tenant_slug:
         raise HTTPException(status_code=401, detail="authenticated tenant context required")
-    return AuthenticatedRequestContext(identity, x_nevis_tenant, request_id)
+    return AuthenticatedRequestContext(identity, tenant_slug, request_id)
 
 
 AuthenticatedRequest = Annotated[AuthenticatedRequestContext, Depends(authenticate_request)]
@@ -319,16 +252,67 @@ def create_app(
     app = FastAPI(title="Nevis Search Platform", version="0.1.0", lifespan=lifespan)
     app.state.session_factory = session_factory
     app.state.embedding_provider = provider
+    app.state.reranker_provider = reranker
     app.state.identity_provider = resolved_identity_provider
     app.state.search_cursor_codec = SearchCursorCodec(
         resolved_settings.search_cursor_signing_key,
         resolved_settings.search_cursor_ttl_seconds,
     )
+    app.state.management_cursor_codec = ManagementCursorCodec(
+        resolved_settings.search_cursor_signing_key,
+        resolved_settings.search_cursor_ttl_seconds,
+    )
     app.state.settings = resolved_settings
+    app.state.summary_configuration = SummaryConfiguration(
+        enabled=resolved_settings.document_summaries_enabled,
+        provider=resolved_settings.llm_provider,
+        model=resolved_settings.llm_model,
+        prompt_version=resolved_settings.document_summary_prompt_version,
+    )
+    app.state.local_console_cookie = LocalConsoleCookieCodec(
+        resolved_settings.search_cursor_signing_key
+    )
+    workspace_directory = Path(__file__).with_name("ui") / "dist"
 
     @app.get("/health/live", tags=["health"])
     async def live() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/ui/context", response_model=ConsoleContextResponse, tags=["workspace"])
+    async def local_console_context(request: Request, response: Response) -> ConsoleContextResponse:
+        if resolved_settings.environment != "local":
+            raise HTTPException(status_code=404, detail="not found")
+        async with request.app.state.session_factory() as session:
+            advisor = await get_advisor_by_external_id(session, "local-advisor")
+            if advisor is None:
+                raise HTTPException(status_code=403, detail="local advisor is not provisioned")
+            tenant = await get_global_tenant(session)
+            membership = await get_active_membership(session, tenant.id, advisor.id)
+            if membership is None:
+                raise HTTPException(status_code=403, detail="local advisor has no workspace")
+        response.set_cookie(
+            key="nevis_local_console",
+            value=request.app.state.local_console_cookie.issue(),
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+        return ConsoleContextResponse(
+            advisor=advisor.external_id,
+            workspace=WorkspaceSummaryResponse(slug=tenant.slug, name=tenant.name),
+        )
+
+    @app.post("/ui/logout", tags=["workspace"])
+    async def local_console_logout(response: Response) -> dict[str, str]:
+        if resolved_settings.environment != "local":
+            raise HTTPException(status_code=404, detail="not found")
+        response.delete_cookie(
+            key="nevis_local_console",
+            path="/",
+            httponly=True,
+            samesite="lax",
+        )
+        return {"status": "signed_out"}
 
     @app.get("/health/ready", tags=["health"])
     async def ready(request: Request, response: Response) -> dict[str, object]:
@@ -336,6 +320,8 @@ def create_app(
             request.app.state.session_factory,
             request.app.state.embedding_provider,
             request.app.state.identity_provider,
+            request.app.state.reranker_provider,
+            request.app.state.settings,
         )
         if not available:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -389,6 +375,59 @@ def create_app(
         )
         return CreateClientResponse(**values)
 
+    @app.get("/v1/clients", response_model=ClientPageResponse, tags=["clients"])
+    async def list_clients_route(
+        request: Request,
+        authenticated: AuthenticatedRequest,
+        limit: int = Query(default=25, ge=1, le=100),
+        cursor: str | None = Query(default=None, max_length=4_096),
+    ) -> ClientPageResponse:
+        context = await authorization_context(
+            request, authenticated=authenticated, action=AuthorizationAction.CLIENT_LIST
+        )
+        cursor_state: ManagementCursorState | None = None
+        if cursor is not None:
+            try:
+                cursor_state = request.app.state.management_cursor_codec.decode(
+                    cursor, tenant_id=context.tenant_id, collection="clients"
+                )
+            except InvalidManagementCursor as error:
+                raise HTTPException(status_code=400, detail="invalid client cursor") from error
+        async with request.app.state.session_factory() as session:
+            page = await list_client_records(
+                session,
+                context,
+                authenticated.request_id,
+                limit=limit,
+                before_created_at=cursor_state.created_at if cursor_state else None,
+                before_id=cursor_state.record_id if cursor_state else None,
+            )
+        next_cursor = None
+        if page.has_more:
+            last = page.clients[-1]
+            next_cursor = request.app.state.management_cursor_codec.encode(
+                ManagementCursorState(
+                    tenant_id=context.tenant_id,
+                    collection="clients",
+                    created_at=last.created_at,
+                    record_id=last.id,
+                    issued_at=int(time.time()),
+                )
+            )
+        return ClientPageResponse(
+            clients=[
+                ClientResponse(
+                    **{
+                        **{field: getattr(client, field) for field in ClientResponse.model_fields},
+                        "created_at": client.created_at.isoformat(),
+                        "updated_at": client.updated_at.isoformat(),
+                    }
+                )
+                for client in page.clients
+            ],
+            next_cursor=next_cursor,
+        )
+
     @app.get("/v1/clients/{client_id}", response_model=ClientResponse, tags=["clients"])
     async def get_client_route(
         client_id: uuid.UUID,
@@ -408,6 +447,45 @@ def create_app(
             created_at=data.created_at.isoformat(), updated_at=data.updated_at.isoformat()
         )
         return ClientResponse(**values)
+
+    @app.patch("/v1/clients/{client_id}", response_model=ClientResponse, tags=["clients"])
+    async def update_client_route(
+        client_id: uuid.UUID,
+        payload: UpdateClientRequest,
+        request: Request,
+        authenticated: AuthenticatedRequest,
+    ) -> ClientResponse:
+        context = await authorization_context(
+            request, authenticated=authenticated, action=AuthorizationAction.CLIENT_UPDATE
+        )
+        async with request.app.state.session_factory() as session:
+            try:
+                data = await update_client(
+                    session,
+                    client_id,
+                    UpdateClientCommand(
+                        first_name=payload.first_name,
+                        last_name=payload.last_name,
+                        email=payload.email,
+                        description=payload.description,
+                        social_links=tuple(payload.social_links),
+                        request_id=authenticated.request_id,
+                    ),
+                    context,
+                )
+            except ClientNotFound as error:
+                raise HTTPException(status_code=404, detail="client not found") from error
+            except ClientUpdateConflict as error:
+                raise HTTPException(status_code=409, detail="client update conflict") from error
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+        return ClientResponse(
+            **{
+                **{field: getattr(data, field) for field in ClientResponse.model_fields},
+                "created_at": data.created_at.isoformat(),
+                "updated_at": data.updated_at.isoformat(),
+            }
+        )
 
     @app.post(
         "/v1/clients/{client_id}/documents",
@@ -463,6 +541,69 @@ def create_app(
         )
 
     @app.get(
+        "/v1/clients/{client_id}/documents",
+        response_model=ClientDocumentPageResponse,
+        tags=["documents"],
+    )
+    async def client_documents_route(
+        client_id: uuid.UUID,
+        request: Request,
+        authenticated: AuthenticatedRequest,
+        limit: int = Query(default=25, ge=1, le=100),
+        cursor: str | None = Query(default=None, max_length=4_096),
+    ) -> ClientDocumentPageResponse:
+        context = await authorization_context(
+            request,
+            authenticated=authenticated,
+            action=AuthorizationAction.CLIENT_DOCUMENT_LIST,
+        )
+        cursor_state: ManagementCursorState | None = None
+        if cursor is not None:
+            try:
+                cursor_state = request.app.state.management_cursor_codec.decode(
+                    cursor, tenant_id=context.tenant_id, collection=f"client-documents:{client_id}"
+                )
+            except InvalidManagementCursor as error:
+                raise HTTPException(status_code=400, detail="invalid document cursor") from error
+        async with request.app.state.session_factory() as session:
+            try:
+                documents, has_more = await list_client_documents(
+                    session,
+                    client_id,
+                    context,
+                    authenticated.request_id,
+                    limit=limit,
+                    before_created_at=cursor_state.created_at if cursor_state else None,
+                    before_id=cursor_state.record_id if cursor_state else None,
+                )
+            except DocumentNotFound as error:
+                raise HTTPException(status_code=404, detail="client not found") from error
+        next_cursor = None
+        if has_more:
+            last = documents[-1]
+            next_cursor = request.app.state.management_cursor_codec.encode(
+                ManagementCursorState(
+                    tenant_id=context.tenant_id,
+                    collection=f"client-documents:{client_id}",
+                    created_at=datetime.fromisoformat(last.created_at),
+                    record_id=last.document_id,
+                    issued_at=int(time.time()),
+                )
+            )
+        return ClientDocumentPageResponse(
+            documents=[
+                ClientDocumentTimelineItemResponse(
+                    **{
+                        field: getattr(document, field)
+                        for field in ClientDocumentTimelineItemResponse.model_fields
+                    }
+                )
+                for document in documents
+            ],
+            next_cursor=next_cursor,
+        )
+
+    @app.get(
         "/v1/documents/{document_id}",
         response_model=DocumentResourceResponse,
         tags=["documents"],
@@ -478,7 +619,10 @@ def create_app(
         async with request.app.state.session_factory() as session:
             try:
                 result = await retrieve_document(
-                    session, document_id, context, authenticated.request_id
+                    session,
+                    document_id,
+                    context,
+                    authenticated.request_id,
                 )
             except DocumentNotFound as error:
                 raise HTTPException(status_code=404, detail="document not found") from error
@@ -630,11 +774,26 @@ def create_app(
             next_cursor=page.next_cursor,
         )
 
+    app.mount(
+        "/assets", StaticFiles(directory=workspace_directory / "assets"), name="workspace-assets"
+    )
+
+    @app.get("/favicon.svg", include_in_schema=False, response_model=None)
+    async def favicon() -> FileResponse:
+        if resolved_settings.environment != "local":
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(workspace_directory / "favicon.svg", media_type="image/svg+xml")
+
+    @app.get("/", include_in_schema=False, response_model=None)
+    async def workspace() -> FileResponse:
+        if resolved_settings.environment != "local":
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            workspace_directory / "index.html", headers={"Cache-Control": "no-store"}
+        )
+
     return app
 
 
-app = create_app()
-
-
 def run() -> None:
-    uvicorn.run("nevis.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("nevis.main:create_app", factory=True, host="0.0.0.0", port=8000, reload=True)

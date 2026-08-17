@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -9,8 +10,11 @@ from nevis.domain.clients import (
     ClientCreationOutcome,
     ClientCreationResult,
     ClientNotFound,
+    ClientPage,
     ClientResource,
+    ClientUpdateConflict,
     CreateClientCommand,
+    UpdateClientCommand,
     client_request_fingerprint,
 )
 from nevis.infrastructure.models import Client
@@ -20,7 +24,9 @@ from nevis.infrastructure.repositories import (
     get_client,
     get_client_by_normalized_email,
     get_client_creation_request,
+    list_clients,
     record_client_creation_request,
+    update_client_record,
 )
 
 
@@ -166,3 +172,82 @@ async def retrieve_client(
     )
     await session.commit()
     return _resource(client, authorization.decision.decision_id)
+
+
+async def list_client_records(
+    session: AsyncSession,
+    authorization: AuthorizationContext,
+    request_id: str,
+    *,
+    limit: int,
+    before_created_at: datetime | None = None,
+    before_id: UUID | None = None,
+) -> ClientPage:
+    records = await list_clients(
+        session,
+        authorization.tenant_id,
+        limit=limit + 1,
+        before_created_at=before_created_at,
+        before_id=before_id,
+    )
+    page = records[:limit]
+    await append_audit_event(
+        session,
+        event_type="client.listed",
+        request_id=request_id,
+        decision=authorization.decision,
+        metadata={"result_count": len(page)},
+    )
+    await session.commit()
+    return ClientPage(
+        clients=tuple(_resource(record, authorization.decision.decision_id) for record in page),
+        has_more=len(records) > limit,
+    )
+
+
+async def update_client(
+    session: AsyncSession,
+    client_id: UUID,
+    command: UpdateClientCommand,
+    authorization: AuthorizationContext,
+) -> ClientResource:
+    normalized = command.normalized()
+    client = await get_client(session, authorization.tenant_id, client_id)
+    if client is None:
+        await append_audit_event(
+            session,
+            event_type="client.not_found",
+            request_id=normalized.request_id,
+            decision=authorization.decision,
+            metadata={"reason": "not_found"},
+        )
+        await session.commit()
+        raise ClientNotFound("client not found")
+    matching_email = await get_client_by_normalized_email(
+        session, authorization.tenant_id, normalized.email
+    )
+    if matching_email is not None and matching_email.id != client.id:
+        await append_audit_event(
+            session,
+            event_type="client.update_conflicted",
+            request_id=normalized.request_id,
+            decision=authorization.decision,
+            metadata={"reason": "email_conflict"},
+        )
+        await session.commit()
+        raise ClientUpdateConflict("client update conflict")
+    try:
+        updated = await update_client_record(session, client=client, command=normalized)
+        await append_audit_event(
+            session,
+            event_type="client.updated",
+            request_id=normalized.request_id,
+            decision=authorization.decision,
+            metadata={"client_id": str(updated.id)},
+        )
+        await session.commit()
+        await session.refresh(updated)
+        return _resource(updated, authorization.decision.decision_id)
+    except IntegrityError as error:
+        await session.rollback()
+        raise ClientUpdateConflict("client update conflict") from error

@@ -89,3 +89,25 @@ The system SHALL return a client search result with a client discriminator, clie
 #### Scenario: Client result is returned
 - **WHEN** a client is included in a search response
 - **THEN** the caller can distinguish it from a document result and attribute it to the authorized tenant, client record, creation decision, and search decision
+
+### Requirement: Tenant-authorized client directory
+The system SHALL provide a bounded, stable, tenant-authorized paginated client directory that returns safe client summary fields and an opaque continuation cursor without disclosing clients, totals, or cursors from another tenant.
+
+#### Scenario: Authorized directory page is requested
+- **WHEN** an advisor with active membership requests a bounded directory page for an explicit tenant
+- **THEN** the system returns only same-tenant client summaries in stable order with an opaque next cursor when another page exists
+
+#### Scenario: Directory request is not authorized
+- **WHEN** an identity without active membership requests a directory page for a tenant
+- **THEN** the system returns `403` and returns no client summaries, totals, or pagination information
+
+### Requirement: Tenant-authorized client update
+The system SHALL allow an advisor with active membership to update the bounded editable fields of a same-tenant client and SHALL return the updated safe representation with an authorization decision identity.
+
+#### Scenario: Authorized client is updated
+- **WHEN** an authorized advisor submits a valid update for a client in the requested tenant
+- **THEN** the system persists the allowed fields, returns the updated representation, and records the authorization outcome
+
+#### Scenario: Target client is absent or cross-tenant
+- **WHEN** an advisor requests an update for an unknown client identity or a client owned by another tenant
+- **THEN** the system returns the same generic `404` response and changes no record

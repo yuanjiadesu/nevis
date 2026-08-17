@@ -53,6 +53,42 @@ async def get_client_by_normalized_email(
     )
 
 
+async def list_clients(
+    session: AsyncSession,
+    tenant_id: object,
+    *,
+    limit: int,
+    before_created_at: datetime | None = None,
+    before_id: object | None = None,
+) -> list[Client]:
+    statement = select(Client).where(Client.tenant_id == tenant_id)
+    if before_created_at is not None and before_id is not None:
+        statement = statement.where(
+            or_(
+                Client.created_at < before_created_at,
+                and_(Client.created_at == before_created_at, Client.id < before_id),
+            )
+        )
+    rows = await session.scalars(
+        statement.order_by(Client.created_at.desc(), Client.id.desc()).limit(limit)
+    )
+    return list(rows)
+
+
+async def update_client_record(session: AsyncSession, *, client: Client, command: object) -> Client:
+    from nevis.domain.clients import UpdateClientCommand
+
+    assert isinstance(command, UpdateClientCommand)
+    client.first_name = command.first_name
+    client.last_name = command.last_name
+    client.email = command.email
+    client.normalized_email = command.email
+    client.description = command.description
+    client.social_links = list(command.social_links)
+    await session.flush()
+    return client
+
+
 async def get_client_creation_request(
     session: AsyncSession, tenant_id: object, idempotency_key: str
 ) -> ClientCreationRequest | None:
