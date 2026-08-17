@@ -8,7 +8,11 @@ from nevis.domain.documents import (
     DocumentAssociationConflict,
     DocumentNotFound,
     DocumentResource,
+    DocumentTimelineItem,
+    DocumentVersionContent,
     DocumentVersionStatus,
+    DocumentVersionTimelineItem,
+    EditableDocument,
     IdempotencyConflict,
     IndexingStatus,
     IngestionCommand,
@@ -76,6 +80,17 @@ async def ingest_plain_text(
             job = await get_indexing_job_for_version(session, existing.document_version_id)
             if version is None or job is None:
                 raise RuntimeError("idempotency record has incomplete lineage")
+            if revision_document_id is not None:
+                if version.document_id != revision_document_id:
+                    raise DocumentNotFound("document not found")
+                updated = await update_document_title(
+                    session,
+                    authorization.tenant_id,
+                    revision_document_id,
+                    command.title.strip(),
+                )
+                if updated is None:
+                    raise DocumentNotFound("document not found")
             await append_audit_event(
                 session,
                 event_type="ingestion.replayed",
@@ -92,14 +107,12 @@ async def ingest_plain_text(
                 outcome=IngestionOutcome.REPLAYED,
             )
 
-        source = await get_or_create_source(
-            session, authorization.tenant_id, command.source_reference.strip()
-        )
+        source = await get_or_create_source(session, authorization.tenant_id, source_reference)
         document = await get_or_create_document(
             session,
             tenant_id=authorization.tenant_id,
             source=source,
-            external_document_id=command.external_document_id.strip(),
+            external_document_id=external_document_id,
             title=command.title.strip(),
             client_id=command.client_id,
         )
@@ -112,6 +125,17 @@ async def ingest_plain_text(
                 metadata={"reason": "client_association_conflict"},
             )
             raise DocumentAssociationConflict("document client association conflict")
+        if revision_document_id is not None:
+            if document.id != revision_document_id:
+                raise DocumentNotFound("document not found")
+            updated = await update_document_title(
+                session,
+                authorization.tenant_id,
+                revision_document_id,
+                command.title.strip(),
+            )
+            if updated is None:
+                raise DocumentNotFound("document not found")
         latest = await get_latest_document_version(session, document.id)
         normalized_hash = content_hash(normalized)
         if latest is not None and latest.content_hash == normalized_hash:
@@ -204,6 +228,42 @@ async def document_version_status(
         failed_at=job.failed_at.isoformat() if job.failed_at else None,
         failure_code=job.failure_code,
         chunk_count=await count_chunks_for_version(session, version_id),
+    )
+
+
+async def retrieve_document_version_content(
+    session: AsyncSession,
+    version_id: uuid.UUID,
+    authorization: AuthorizationContext,
+    request_id: str,
+) -> DocumentVersionContent:
+    version = await get_document_version(session, version_id, authorization.tenant_id)
+    if version is None:
+        await append_audit_event(
+            session,
+            event_type="document.version_content_not_found",
+            request_id=request_id,
+            decision=authorization.decision,
+            metadata={"reason": "not_found"},
+        )
+        await session.commit()
+        raise DocumentNotFound("document version not found")
+    await append_audit_event(
+        session,
+        event_type="document.version_content_found",
+        request_id=request_id,
+        decision=authorization.decision,
+        metadata={
+            "document_id": str(version.document_id),
+            "version_number": version.version_number,
+        },
+    )
+    await session.commit()
+    return DocumentVersionContent(
+        document_version_id=version.id,
+        document_id=version.document_id,
+        version_number=version.version_number,
+        content=version.content,
     )
 
 

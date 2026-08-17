@@ -631,6 +631,117 @@ def create_app(
         )
 
     @app.get(
+        "/v1/documents/{document_id}/edit",
+        response_model=DocumentEditResponse,
+        tags=["documents"],
+    )
+    async def document_edit_route(
+        document_id: uuid.UUID,
+        request: Request,
+        authenticated: AuthenticatedRequest,
+    ) -> DocumentEditResponse:
+        context = await authorization_context(
+            request, authenticated=authenticated, action=AuthorizationAction.DOCUMENT_EDIT
+        )
+        async with request.app.state.session_factory() as session:
+            try:
+                result = await retrieve_editable_document(
+                    session, document_id, context, authenticated.request_id
+                )
+            except DocumentNotFound as error:
+                raise HTTPException(status_code=404, detail="document not found") from error
+        return DocumentEditResponse(
+            document_id=result.document_id,
+            client_id=result.client_id,
+            title=result.title,
+            content=result.content,
+            current_document_version_id=result.current_document_version_id,
+            current_version_number=result.current_version_number,
+        )
+
+    @app.post(
+        "/v1/documents/{document_id}/revisions",
+        status_code=status.HTTP_202_ACCEPTED,
+        response_model=IngestDocumentResponse,
+        tags=["ingestion"],
+    )
+    async def document_revision_route(
+        document_id: uuid.UUID,
+        payload: DocumentRevisionRequest,
+        request: Request,
+        authenticated: AuthenticatedRequest,
+        idempotency_key: str = Header(min_length=1, max_length=255),
+    ) -> IngestDocumentResponse:
+        context = await authorization_context(
+            request, authenticated=authenticated, action=AuthorizationAction.DOCUMENT_REVISE
+        )
+        async with request.app.state.session_factory() as session:
+            try:
+                result = await revise_document(
+                    session,
+                    document_id,
+                    title=payload.title,
+                    content=payload.content,
+                    idempotency_key=idempotency_key,
+                    profile_identity=request.app.state.embedding_provider.profile,
+                    authorization=context,
+                    request_id=authenticated.request_id,
+                    summary_configuration=request.app.state.summary_configuration,
+                )
+            except DocumentNotFound as error:
+                raise HTTPException(status_code=404, detail="document not found") from error
+            except DocumentAssociationConflict as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            except IdempotencyConflict as error:
+                raise HTTPException(status_code=409, detail="idempotency key conflict") from error
+            except IntegrityError as error:
+                raise HTTPException(status_code=409, detail="ingestion conflict") from error
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+        return IngestDocumentResponse(
+            client_id=result.client_id,
+            document_id=result.document_id,
+            document_version_id=result.document_version_id,
+            version_number=result.version_number,
+            indexing_status=result.indexing_status,
+            outcome=result.outcome,
+        )
+
+    @app.get(
+        "/v1/documents/{document_id}/versions",
+        response_model=DocumentVersionTimelineResponse,
+        tags=["documents"],
+    )
+    async def document_versions_route(
+        document_id: uuid.UUID,
+        request: Request,
+        authenticated: AuthenticatedRequest,
+    ) -> DocumentVersionTimelineResponse:
+        context = await authorization_context(
+            request,
+            authenticated=authenticated,
+            action=AuthorizationAction.DOCUMENT_VERSION_LIST,
+        )
+        async with request.app.state.session_factory() as session:
+            try:
+                versions = await list_document_versions(
+                    session, document_id, context, authenticated.request_id
+                )
+            except DocumentNotFound as error:
+                raise HTTPException(status_code=404, detail="document not found") from error
+        return DocumentVersionTimelineResponse(
+            versions=[
+                DocumentVersionTimelineItemResponse(
+                    **{
+                        field: getattr(version, field)
+                        for field in DocumentVersionTimelineItemResponse.model_fields
+                    }
+                )
+                for version in versions
+            ]
+        )
+
+    @app.get(
         "/v1/document-versions/{document_version_id}",
         response_model=DocumentVersionStatusResponse,
         tags=["ingestion"],
@@ -660,6 +771,35 @@ def create_app(
             failed_at=result.failed_at,
             failure_code=result.failure_code,
             chunk_count=result.chunk_count,
+        )
+
+    @app.get(
+        "/v1/document-versions/{document_version_id}/content",
+        response_model=DocumentVersionContentResponse,
+        tags=["documents"],
+    )
+    async def document_version_content_route(
+        document_version_id: uuid.UUID,
+        request: Request,
+        authenticated: AuthenticatedRequest,
+    ) -> DocumentVersionContentResponse:
+        context = await authorization_context(
+            request,
+            authenticated=authenticated,
+            action=AuthorizationAction.DOCUMENT_VERSION_CONTENT_READ,
+        )
+        async with request.app.state.session_factory() as session:
+            try:
+                result = await retrieve_document_version_content(
+                    session, document_version_id, context, authenticated.request_id
+                )
+            except DocumentNotFound as error:
+                raise HTTPException(status_code=404, detail="document version not found") from error
+        return DocumentVersionContentResponse(
+            document_version_id=result.document_version_id,
+            document_id=result.document_id,
+            version_number=result.version_number,
+            content=result.content,
         )
 
     @app.get(
