@@ -131,6 +131,11 @@ class Client(Base):
         Index("ix_clients_tenant_id_id", "tenant_id", "id"),
         Index("ix_clients_search_vector", "search_vector", postgresql_using="gin"),
         Index(
+            "ix_clients_full_name_trgm",
+            text("(first_name || ' ' || last_name) gin_trgm_ops"),
+            postgresql_using="gin",
+        ),
+        Index(
             "ix_clients_tenant_normalized_full_name",
             "tenant_id",
             text("lower((first_name::text || ' '::text) || last_name::text)"),
@@ -187,12 +192,18 @@ class Document(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "source_id", "external_document_id"),
         Index("ix_documents_title_search", "title_search_vector", postgresql_using="gin"),
+        Index(
+            "ix_documents_title_trgm",
+            "title",
+            postgresql_using="gin",
+            postgresql_ops={"title": "gin_trgm_ops"},
+        ),
         Index("ix_documents_tenant_client", "tenant_id", "client_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), nullable=False)
-    client_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("clients.id"))
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id"), nullable=False)
     source_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("document_sources.id"), nullable=False)
     external_document_id: Mapped[str] = mapped_column(String(255), nullable=False)
     title: Mapped[str] = mapped_column(String(500), nullable=False)

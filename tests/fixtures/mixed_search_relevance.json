@@ -1,46 +1,93 @@
 {
-  "ranking_version": "mixed-rrf-v1",
-  "k": 5,
+  "ranking_version": "mixed-rrf-v5",
+  "recall_k": 5,
+  "precision_k": 5,
+  "ndcg_k": 10,
   "cases": [
     {
-      "label": "exact client email",
-      "query": "compose-mixed-fixture-v3@nevis.test",
-      "evidence": "exact_email",
-      "relevant": [{"type": "client", "title": "Nevis Indexing"}]
+      "label": "complete client domain", "split": "selection",
+      "query": "neviswealth.com", "expected_mode": "lexical_identifier",
+      "judgments": [{"type": "client", "title": "John Doe", "relevance": 3}]
     },
     {
-      "label": "exact client name",
-      "query": "Grace Hopper",
-      "evidence": "exact_name",
-      "relevant": [{"type": "client", "title": "Grace Hopper"}]
+      "label": "email-domain token in client identity", "split": "regression",
+      "query": "NevisWealth", "expected_mode": "hybrid",
+      "judgments": [{"type": "client", "title": "John Doe", "relevance": 3}]
     },
     {
-      "label": "client description",
-      "query": "estate inheritance specialist",
-      "evidence": "client_description",
-      "relevant": [{"type": "client", "title": "Grace Hopper"}]
+      "label": "address evidence paraphrase", "split": "selection",
+      "query": "address proof", "expected_mode": "hybrid",
+      "judgments": [
+        {"type": "document", "title": "Household electricity statement", "relevance": 3},
+        {"type": "document", "title": "Change of correspondence address", "relevance": 0},
+        {"type": "document", "title": "Utility sector investment outlook", "relevance": 0}
+      ],
+      "required_first": {"type": "document", "title": "Household electricity statement"}
     },
     {
-      "label": "document semantic paraphrase",
-      "query": "family wealth passed to descendants",
-      "evidence": "document_semantic",
-      "relevant": [{"type": "document", "title": "Inheritance trust note"}]
-    },
-    {
-      "label": "ambiguous mixed identity and content",
-      "query": "Nevis indexing",
-      "evidence": "ambiguous_mixed",
-      "relevant": [
-        {"type": "client", "title": "Nevis Indexing"},
-        {"type": "document", "title": "Mixed Compose smoke fixture"}
+      "label": "responsible investing paraphrase", "split": "selection",
+      "query": "green investing", "expected_mode": "hybrid",
+      "judgments": [
+        {"type": "document", "title": "Responsible investment preference", "relevance": 3},
+        {"type": "client", "title": "Maya Patel", "relevance": 2}
       ]
     },
     {
-      "label": "nonsense query",
-      "query": "zzzxqv plmoknijb",
-      "evidence": "threshold",
-      "relevant": [],
-      "expect_empty": true
+      "label": "one-character-short semantic term", "split": "selection",
+      "query": "investment opportunit", "expected_mode": "hybrid",
+      "judgments": [
+        {"type": "document", "title": "Responsible investment preference", "relevance": 3},
+        {"type": "document", "title": "Future education costs", "relevance": 2}
+      ]
+    },
+    {
+      "label": "misspelled client name", "split": "regression",
+      "query": "Myaa Patel", "expected_mode": "hybrid",
+      "judgments": [{"type": "client", "title": "Maya Patel", "relevance": 3}]
+    },
+    {
+      "label": "short-name collision stays empty", "split": "selection",
+      "query": "Myaa", "expected_mode": "hybrid",
+      "judgments": [], "expect_empty": true
+    },
+    {
+      "label": "misspelled document title", "split": "regression",
+      "query": "Responsble investment preference", "expected_mode": "hybrid",
+      "judgments": [
+        {"type": "document", "title": "Responsible investment preference", "relevance": 3}
+      ]
+    },
+    {
+      "label": "pension consolidation paraphrase", "split": "regression",
+      "query": "move old workplace pension", "expected_mode": "hybrid",
+      "judgments": [{"type": "document", "title": "Workplace pension consolidation", "relevance": 3}]
+    },
+    {
+      "label": "emergency savings paraphrase", "split": "regression",
+      "query": "rainy day fund", "expected_mode": "hybrid",
+      "judgments": [{"type": "document", "title": "Short-term cash reserve", "relevance": 3}]
+    },
+    {
+      "label": "inheritance paraphrase", "split": "regression",
+      "query": "family wealth passed to descendants", "expected_mode": "hybrid",
+      "judgments": [{"type": "document", "title": "Legacy and beneficiary discussion", "relevance": 3}]
+    },
+    {
+      "label": "misspelled content term", "split": "regression",
+      "query": "current residntial", "expected_mode": "hybrid",
+      "judgments": [
+        {"type": "document", "title": "Household electricity statement", "relevance": 3}
+      ]
+    },
+    {
+      "label": "near-miss complete identifier", "split": "selection",
+      "query": "nevisweath.com", "expected_mode": "lexical_identifier",
+      "judgments": [], "expect_empty": true
+    },
+    {
+      "label": "nonsense query", "split": "selection",
+      "query": "zzzxqv plmoknijb", "expected_mode": "hybrid",
+      "judgments": [], "expect_empty": true
     }
   ]
 }

@@ -21,6 +21,7 @@ class MatchBand(IntEnum):
     EXACT_EMAIL = 0
     EXACT_NAME = 1
     GENERAL = 2
+    FUZZY = 3
 
 
 class SearchError(Exception):

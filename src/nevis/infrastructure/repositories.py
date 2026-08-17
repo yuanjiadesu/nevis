@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -861,6 +861,87 @@ async def search_semantic_candidates(
                 "profile_id": profile_id,
                 "embedding": vector,
                 "threshold": threshold,
+                "snippet_length": snippet_length,
+                "limit": limit,
+            },
+        )
+    ).mappings()
+    return [_candidate_from_mapping(row) for row in rows]
+
+
+async def _set_strict_word_similarity_threshold(session: AsyncSession, threshold: float) -> None:
+    await session.execute(
+        text(
+            "SELECT set_config("
+            "'pg_trgm.strict_word_similarity_threshold', CAST(:threshold AS text), true)"
+        ),
+        {"threshold": format(threshold, "g")},
+    )
+
+
+async def search_fuzzy_title_candidates(
+    session: AsyncSession,
+    *,
+    tenant_id: object,
+    profile_id: object,
+    query: str,
+    threshold: float,
+    limit: int,
+    snippet_length: int,
+) -> list[RetrievalCandidate]:
+    await _set_strict_word_similarity_threshold(session, threshold)
+    statement = text(
+        """
+        WITH ranked AS (
+            SELECT DISTINCT ON (d.id)
+                c.tenant_id, d.client_id, c.source_id, c.document_id,
+                c.document_version_id, c.embedding_profile_id,
+                c.authorization_decision_id, c.id AS chunk_id, c.content, d.title,
+                cl.first_name || ' ' || cl.last_name AS client_name,
+                left(c.content, :snippet_length) AS snippet,
+                strict_word_similarity(:query, d.title) AS score
+            FROM documents d
+            JOIN document_chunks c ON c.document_id = d.id
+            JOIN clients cl
+              ON cl.id = d.client_id AND cl.tenant_id = :tenant_id
+            JOIN document_versions v
+              ON v.id = c.document_version_id AND v.tenant_id = :tenant_id
+            JOIN indexing_jobs j
+              ON j.document_version_id = c.document_version_id
+             AND j.embedding_profile_id = c.embedding_profile_id
+             AND j.tenant_id = :tenant_id
+            WHERE d.tenant_id = :tenant_id
+              AND c.tenant_id = :tenant_id
+              AND c.embedding_profile_id = :profile_id
+              AND c.authorization_result = 'allow'
+              AND j.authorization_result = 'allow'
+              AND j.status = 'completed'
+              AND :query <<% d.title
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM document_versions newer
+                  WHERE newer.tenant_id = :tenant_id
+                    AND newer.document_id = v.document_id
+                    AND newer.version_number > v.version_number
+              )
+            ORDER BY d.id, c.ordinal, c.id
+        )
+        SELECT tenant_id, client_id, client_name, source_id, document_id,
+               document_version_id, embedding_profile_id, authorization_decision_id,
+               title, chunk_id, content, true AS title_match,
+               false AS content_match, false AS semantic_match, snippet, score
+        FROM ranked
+        ORDER BY score DESC, document_id ASC
+        LIMIT :limit
+        """
+    )
+    rows = (
+        await session.execute(
+            statement,
+            {
+                "tenant_id": tenant_id,
+                "profile_id": profile_id,
+                "query": query,
                 "snippet_length": snippet_length,
                 "limit": limit,
             },

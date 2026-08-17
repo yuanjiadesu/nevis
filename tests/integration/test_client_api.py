@@ -16,6 +16,7 @@ from nevis.infrastructure.models import Advisor, AdvisorTenantMembership, AuditE
 from nevis.infrastructure.repositories import (
     search_exact_email_clients,
     search_exact_name_clients,
+    search_fuzzy_name_clients,
     search_lexical_clients,
 )
 from nevis.main import create_app
@@ -34,6 +35,46 @@ def client_command(key: str, request_id: str) -> CreateClientCommand:
         idempotency_key=key,
         request_id=request_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_local_console_context_sets_fixed_server_identity(
+    database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with database_session_factory() as session:
+        tenant = await session.scalar(select(Tenant).where(Tenant.slug == "nevis-global"))
+        assert tenant is not None
+        advisor = Advisor(external_id="local-advisor")
+        session.add(advisor)
+        await session.flush()
+        session.add(AdvisorTenantMembership(advisor_id=advisor.id, tenant_id=tenant.id))
+        await session.commit()
+
+    app = create_app(Settings(_env_file=None, database_url=os.environ["NEVIS_TEST_DATABASE_URL"]))
+    app.state.session_factory = database_session_factory
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        context = await client.get("/ui/context")
+        assert context.status_code == 200
+        assert context.json() == {
+            "advisor": "local-advisor",
+            "workspace": {"slug": "nevis-global", "name": tenant.name},
+        }
+        assert context.cookies.get("nevis_local_console")
+        directory = await client.get("/v1/clients")
+        assert directory.status_code == 200
+        logout = await client.post("/ui/logout")
+        assert logout.status_code == 200
+        assert logout.json() == {"status": "signed_out"}
+        assert "nevis_local_console=" in logout.headers["set-cookie"]
+        assert "Max-Age=0" in logout.headers["set-cookie"]
+        rejected_after_logout = await client.get("/v1/clients")
+        assert rejected_after_logout.status_code == 401
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.cookies.set("nevis_local_console", "forged")
+        rejected = await client.get("/v1/clients")
+        assert rejected.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -58,6 +99,8 @@ async def test_client_lookup_indexes_support_tenant_first_plans(
         assert "ix_clients_tenant_id_id" in indexes
         assert "ix_clients_search_vector" in indexes
         assert "ix_clients_tenant_normalized_full_name" in indexes
+        assert "ix_clients_full_name_trgm" in indexes
+        assert "ix_documents_title_trgm" in indexes
         assert "ix_documents_tenant_client" in indexes
         await session.execute(
             text(
@@ -76,6 +119,8 @@ async def test_client_lookup_indexes_support_tenant_first_plans(
                 "decision": authorized_context.decision.decision_id,
             },
         )
+        await session.execute(text("SELECT gin_clean_pending_list('ix_clients_search_vector')"))
+        await session.execute(text("SELECT gin_clean_pending_list('ix_clients_full_name_trgm')"))
         await session.execute(text("ANALYZE clients"))
         await session.execute(text("SET LOCAL enable_seqscan = off"))
         name_plan = "\n".join(
@@ -102,6 +147,30 @@ async def test_client_lookup_indexes_support_tenant_first_plans(
             ).scalars()
         )
         assert "ix_clients_search_vector" in lexical_plan
+        await session.execute(
+            text("SELECT set_config('pg_trgm.strict_word_similarity_threshold', '0.5', true)")
+        )
+        fuzzy_name_plan = "\n".join(
+            (
+                await session.execute(
+                    text(
+                        "EXPLAIN SELECT id FROM clients WHERE tenant_id=:tenant "
+                        "AND :query <<% (first_name || ' ' || last_name)"
+                    ),
+                    {"tenant": authorized_context.tenant_id, "query": "Loda 10000"},
+                )
+            ).scalars()
+        )
+        assert "ix_clients_full_name_trgm" in fuzzy_name_plan
+        fuzzy_title_plan = "\n".join(
+            (
+                await session.execute(
+                    text("EXPLAIN SELECT id FROM documents WHERE :query <<% title"),
+                    {"query": "Annual reveiw"},
+                )
+            ).scalars()
+        )
+        assert "ix_documents_title_trgm" in fuzzy_title_plan
 
 
 @pytest.mark.asyncio
@@ -117,8 +186,8 @@ async def test_client_search_branches_are_tenant_scoped_and_deterministic(
                 tenant_id=authorized_context.tenant_id,
                 first_name="Ada",
                 last_name="Lovelace",
-                email=f"ada-{suffix}@example.com",
-                normalized_email=f"ada-{suffix}@example.com",
+                email=f"ada-{suffix}@nevis.test",
+                normalized_email=f"ada-{suffix}@nevis.test",
                 description="Analytical engine retirement specialist",
                 social_links=[],
                 source_type="fixture",
@@ -147,8 +216,8 @@ async def test_client_search_branches_are_tenant_scoped_and_deterministic(
                     tenant_id=other_tenant.id,
                     first_name="Ada",
                     last_name="Lovelace",
-                    email=f"ada-{suffix}@example.com",
-                    normalized_email=f"ada-{suffix}@example.com",
+                    email=f"ada-{suffix}@nevis.test",
+                    normalized_email=f"ada-{suffix}@nevis.test",
                     description="Analytical engine retirement specialist",
                     social_links=[],
                     source_type="fixture",
@@ -161,7 +230,7 @@ async def test_client_search_branches_are_tenant_scoped_and_deterministic(
         email = await search_exact_email_clients(
             session,
             tenant_id=authorized_context.tenant_id,
-            query=f"  ADA-{suffix}@EXAMPLE.COM  ",
+            query=f"  ADA-{suffix}@NEVIS.TEST  ",
         )
         name = await search_exact_name_clients(
             session,
@@ -175,10 +244,29 @@ async def test_client_search_branches_are_tenant_scoped_and_deterministic(
             query="analytical retirement",
             limit=10,
         )
+        email_domain = await search_lexical_clients(
+            session,
+            tenant_id=authorized_context.tenant_id,
+            query="NEVIS.TEST",
+            limit=10,
+        )
+        name_prefix = await search_lexical_clients(
+            session,
+            tenant_id=authorized_context.tenant_id,
+            query="ad",
+            limit=10,
+        )
         nonsense = await search_lexical_clients(
             session,
             tenant_id=authorized_context.tenant_id,
             query="zzzxqv unmatched",
+            limit=10,
+        )
+        fuzzy_name = await search_fuzzy_name_clients(
+            session,
+            tenant_id=authorized_context.tenant_id,
+            query="Myaa Lovelace",
+            threshold=0.5,
             limit=10,
         )
 
@@ -191,7 +279,16 @@ async def test_client_search_branches_are_tenant_scoped_and_deterministic(
     assert [(item.client_id, item.match_band) for item in lexical] == [
         (matching.id, MatchBand.GENERAL)
     ]
+    assert [(item.client_id, item.match_band) for item in email_domain] == [
+        (matching.id, MatchBand.GENERAL)
+    ]
+    assert [(item.client_id, item.match_band) for item in name_prefix] == [
+        (matching.id, MatchBand.GENERAL)
+    ]
     assert nonsense == []
+    assert [(item.client_id, item.match_band) for item in fuzzy_name] == [
+        (matching.id, MatchBand.FUZZY)
+    ]
     assert all(item.client_id != client_id for item in lexical)
 
 
@@ -222,7 +319,7 @@ async def test_client_create_replay_conflict_retrieve_and_document_workflow(
     database_session_factory: async_sessionmaker[AsyncSession],
     authorized_context,
 ) -> None:
-    app = create_app(Settings(database_url=os.environ["NEVIS_TEST_DATABASE_URL"]))
+    app = create_app(Settings(_env_file=None, database_url=os.environ["NEVIS_TEST_DATABASE_URL"]))
     app.state.session_factory = database_session_factory
     transport = httpx.ASGITransport(app=app)
     identity = {"X-Nevis-Tenant": "nevis-global", "X-Nevis-Advisor": "test-advisor"}
@@ -258,6 +355,22 @@ async def test_client_create_replay_conflict_retrieve_and_document_workflow(
         found = await client.get(f"/v1/clients/{client_id}", headers=identity)
         assert found.status_code == 200
         assert found.json()["retrieval_authorization_decision_id"]
+        directory = await client.get("/v1/clients?limit=1", headers=identity)
+        assert directory.status_code == 200
+        assert directory.json()["clients"][0]["id"] == client_id
+        updated = await client.patch(
+            f"/v1/clients/{client_id}",
+            json={
+                "first_name": "Ada",
+                "last_name": "Byron",
+                "email": "ada@example.com",
+                "description": "Computing pioneer",
+                "social_links": ["https://example.com/ada"],
+            },
+            headers=identity,
+        )
+        assert updated.status_code == 200
+        assert updated.json()["last_name"] == "Byron"
         missing = await client.get(f"/v1/clients/{uuid.uuid4()}", headers=identity)
         assert missing.status_code == 404
         document = await client.post(
@@ -277,6 +390,68 @@ async def test_client_create_replay_conflict_retrieve_and_document_workflow(
         assert resource.status_code == 200
         assert resource.json()["client_id"] == client_id
         assert "content" not in resource.json()
+        document_id = document.json()["document_id"]
+        timeline = await client.get(f"/v1/clients/{client_id}/documents", headers=identity)
+        assert timeline.status_code == 200
+        assert timeline.json()["documents"][0]["document_id"] == document_id
+        assert timeline.json()["documents"][0]["indexing_status"] == "queued"
+        versions = await client.get(f"/v1/documents/{document_id}/versions", headers=identity)
+        assert versions.status_code == 200
+        assert versions.json()["versions"] == [
+            {
+                "document_version_id": document.json()["document_version_id"],
+                "document_id": document_id,
+                "version_number": 1,
+                "indexing_status": "queued",
+                "created_at": versions.json()["versions"][0]["created_at"],
+            }
+        ]
+        second = await client.post(
+            "/v1/clients",
+            json={
+                **payload,
+                "first_name": "Grace",
+                "last_name": "Hopper",
+                "email": "grace@example.com",
+            },
+            headers={**identity, "Idempotency-Key": "client-create-3"},
+        )
+        assert second.status_code == 201
+        first_page = await client.get("/v1/clients?limit=1", headers=identity)
+        assert first_page.status_code == 200
+        assert first_page.json()["next_cursor"]
+        second_page = await client.get(
+            f"/v1/clients?limit=1&cursor={first_page.json()['next_cursor']}", headers=identity
+        )
+        assert second_page.status_code == 200
+        assert second_page.json()["clients"][0]["id"] != first_page.json()["clients"][0]["id"]
+        suffix = uuid.uuid4().hex
+        async with database_session_factory() as session:
+            async with session.begin():
+                other_tenant = Tenant(slug=f"other-{suffix}", name="Other tenant")
+                other_advisor = Advisor(external_id=f"other-advisor-{suffix}")
+                session.add_all([other_tenant, other_advisor])
+                await session.flush()
+                session.add(
+                    AdvisorTenantMembership(tenant_id=other_tenant.id, advisor_id=other_advisor.id)
+                )
+        other_identity = {
+            "X-Nevis-Tenant": f"other-{suffix}",
+            "X-Nevis-Advisor": f"other-advisor-{suffix}",
+        }
+        assert (await client.get("/v1/clients", headers=other_identity)).json() == {
+            "clients": [],
+            "next_cursor": None,
+        }
+        assert (
+            await client.patch(f"/v1/clients/{client_id}", json=payload, headers=other_identity)
+        ).status_code == 404
+        assert (
+            await client.get(f"/v1/clients/{client_id}/documents", headers=other_identity)
+        ).status_code == 404
+        assert (
+            await client.get(f"/v1/documents/{document_id}/versions", headers=other_identity)
+        ).status_code == 404
         assert (await client.post("/v1/documents", json={}, headers=headers)).status_code == 404
 
         async with database_session_factory() as session:
